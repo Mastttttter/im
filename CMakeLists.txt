@@ -37,6 +37,8 @@ add_executable(im
 ${PROJECT_SOURCE_DIR}/main.cpp
 ${PROJECT_SOURCE_DIR}/include/widget/AddFriendDialog.h
 ${PROJECT_SOURCE_DIR}/src/widget/AddFriendDialog.cpp
+${PROJECT_SOURCE_DIR}/include/widget/MainWindow.h
+${PROJECT_SOURCE_DIR}/src/widget/MainWindow.cpp
 ${PROJECT_SOURCE_DIR}/src/core/ToxCoreWrapper.cpp
 )
 

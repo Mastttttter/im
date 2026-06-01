@@ -1,14 +1,12 @@
 #include "widget/MainWindow.h"
-#include <qnamespace.h>
-#include <qtmetamacros.h>
+#include "widget/AddFriendDialog.h"
 #include <QApplication>
-#include <QCloseEvent>
+#include <QClipboard>
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QDir>
 #include <QDockWidget>
-#include <QDoubleSpinBox>
 #include <QFile>
-#include <QFileDialog>
 #include <QHBoxLayout>
 #include <QInputDialog>
 #include <QJsonArray>
@@ -16,90 +14,196 @@
 #include <QJsonObject>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QLineEdit>
 #include <QListWidget>
 #include <QMessageBox>
-#include <QPainter>
+#include <QMetaObject>
 #include <QPushButton>
 #include <QSignalBlocker>
-#include <QSpinBox>
 #include <QSplitter>
-#include <QStandardPaths>
 #include <QStatusBar>
 #include <QTabWidget>
-#include <QTextBlock>
-#include <QTextBlockFormat>
 #include <QTextBrowser>
-#include <QTextCharFormat>
-#include <QTextCursor>
 #include <QTextEdit>
 #include <QTimer>
-#include <QVariant>
 #include <QVBoxLayout>
+#include <QVariant>
 #include <QWidget>
-#include "MainWindow.moc"
+#include <algorithm>
+#include <array>
+#include <functional>
+#include <limits>
+#include <string>
+#include <utility>
+#include <vector>
 
-class ChatInputEdit : public QTextEdit {
-  Q_OBJECT
+class ChatInputEdit final : public QTextEdit {
   public:
   explicit ChatInputEdit(QWidget *parent = nullptr) : QTextEdit(parent) {
     setAcceptRichText(false);
     setTabChangesFocus(true);
-    setMaximumHeight(80);
-    setMinimumHeight(32);
-    setStyleSheet(QStringLiteral("QTextEdit { padding: 4px;"));
+    setMinimumHeight(42);
+    setMaximumHeight(96);
   }
 
-  void SetPlaceHolderText(QString const &text) {
-    placeholderText_ = text;
-    viewport()->update();
+  void SetSubmitHandler(std::function<void()> handler) {
+    submitHandler_ = std::move(handler);
   }
-
-  QString ToPlanText() const {
-    return QTextEdit::toPlainText();
-  }
-
-  signals:
-  void enterPressed();
 
   protected:
   void keyPressEvent(QKeyEvent *event) override {
-    if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
-      if (event->modifiers() & Qt::ShiftModifier) {
-        QTextEdit::keyPressEvent(event);
-      } else {
-        event->accept();
-        emit enterPressed();
+    if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) &&
+        !(event->modifiers() & Qt::ShiftModifier)) {
+      event->accept();
+      if (submitHandler_) {
+        submitHandler_();
       }
-    } else {
-      QTextEdit::keyPressEvent(event);
+      return;
     }
-  }
-
-  void paintEvent(QPaintEvent *event) override {
-    QTextEdit::paintEvent(event);
-    if (document()->isEmpty() && !placeholderText_.isEmpty()) {
-      QPainter painter(viewport());
-      painter.setPen(QColor(160, 160, 160));
-      QRect rect = viewport()->rect();
-      rect.setLeft(rect.left() + 5);
-      rect.setTop(rect.top() + 5);
-      painter.drawText(rect, Qt::AlignLeft | Qt::AlignTop, placeholderText_);
-    }
+    QTextEdit::keyPressEvent(event);
   }
 
   private:
-  QString placeholderText_;
+  std::function<void()> submitHandler_;
 };
 
 namespace {
-inline void SetMsgBoxButtonText_(QMessageBox &box,
-                                 QMessageBox::StandardButton button,
-                                 QString const &text) {
-  if (auto btn = box.button(button)) {
+constexpr uint32_t kInvalidNumber = std::numeric_limits<uint32_t>::max();
+
+struct BootstrapNode {
+  QString address;
+  uint16_t port{};
+  QString publicKeyHex;
+};
+
+QString FromUtf8(std::string const &text) {
+  return QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size()));
+}
+
+QString EscapedMultiline(QString text) {
+  return text.toHtmlEscaped().replace(QStringLiteral("\n"),
+                                      QStringLiteral("<br/>"));
+}
+
+QString TimeText() {
+  return QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss"));
+}
+
+QString ChatLine(QString const &sender, QString const &message, bool outgoing) {
+  QString const nameColor = outgoing ? QStringLiteral("#4fc3f7")
+                                     : QStringLiteral("#81c784");
+  return QStringLiteral(
+             "<div style='margin:8px 0;'>"
+             "<span style='font-weight:600;color:%1;'>%2</span> "
+             "<span style='color:#8b92a6;font-size:9pt;'>%3</span>"
+             "<div style='white-space:pre-wrap;'>%4</div>"
+             "</div>")
+      .arg(nameColor, sender.toHtmlEscaped(), TimeText(),
+           EscapedMultiline(message));
+}
+
+void SetMsgBoxButtonText(QMessageBox &box, QMessageBox::StandardButton button,
+                         QString const &text) {
+  if (auto *btn = box.button(button)) {
     btn->setText(text);
   }
 }
 
+QJsonArray NodeArrayFromDocument(QJsonDocument const &doc) {
+  if (doc.isArray()) {
+    return doc.array();
+  }
+  if (!doc.isObject()) {
+    return {};
+  }
+  QJsonObject const object = doc.object();
+  if (object.value(QStringLiteral("nodes")).isArray()) {
+    return object.value(QStringLiteral("nodes")).toArray();
+  }
+  if (object.value(QStringLiteral("bootstrap_nodes")).isArray()) {
+    return object.value(QStringLiteral("bootstrap_nodes")).toArray();
+  }
+  return {};
+}
+
+QString FirstString(QJsonObject const &object,
+                    std::initializer_list<QStringView> keys) {
+  for (QStringView key : keys) {
+    QJsonValue const value = object.value(key.toString());
+    if (value.isString() && !value.toString().trimmed().isEmpty()) {
+      return value.toString().trimmed();
+    }
+  }
+  return {};
+}
+
+uint16_t PortFromObject(QJsonObject const &object) {
+  QJsonValue const value = object.value(QStringLiteral("port"));
+  if (value.isDouble()) {
+    int const port = value.toInt();
+    if (port > 0 && port <= 65535) {
+      return static_cast<uint16_t>(port);
+    }
+  }
+  if (value.isString()) {
+    bool ok = false;
+    int const port = value.toString().toInt(&ok);
+    if (ok && port > 0 && port <= 65535) {
+      return static_cast<uint16_t>(port);
+    }
+  }
+  return 0;
+}
+
+std::vector<BootstrapNode> DefaultBootstrapNodes() {
+  return {{QStringLiteral("144.217.167.73"), 33445,
+           QStringLiteral(
+               "7E5668E0EE09E19F320AD47902419331FFEE147BB3606769CFBE921A2A2FD34C")},
+          {QStringLiteral("tox.abilinski.com"), 33445,
+           QStringLiteral(
+               "10C00EB250C3233E343E2AEBA07115A5C28920E9C8D29492F6D00B29049EDC7E")},
+          {QStringLiteral("198.199.98.108"), 33445,
+           QStringLiteral(
+               "BEF0CFB37AF874BD17B9A8F9FE64C75521DB95A37D33C5BDB00E9CF58659C04F")}};
+}
+
+std::vector<BootstrapNode> LoadBootstrapNodes(QStringList const &paths) {
+  for (QString const &path : paths) {
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+      continue;
+    }
+    QJsonParseError error{};
+    QJsonDocument const doc = QJsonDocument::fromJson(file.readAll(), &error);
+    if (error.error != QJsonParseError::NoError) {
+      continue;
+    }
+    std::vector<BootstrapNode> nodes;
+    for (QJsonValue const value : NodeArrayFromDocument(doc)) {
+      if (!value.isObject()) {
+        continue;
+      }
+      QJsonObject const object = value.toObject();
+      QString address = FirstString(
+          object, {QStringLiteral("address"), QStringLiteral("host"),
+                   QStringLiteral("ipv4"), QStringLiteral("ip")});
+      QString publicKey = FirstString(
+          object, {QStringLiteral("public_key"), QStringLiteral("publicKey"),
+                   QStringLiteral("publicKeyHex"), QStringLiteral("key")});
+      publicKey.remove(QChar(' '));
+      publicKey.remove(QChar(':'));
+      uint16_t const port = PortFromObject(object);
+      if (address.compare(QStringLiteral("NONE"), Qt::CaseInsensitive) != 0 &&
+          !address.isEmpty() && port != 0 && publicKey.size() == 64) {
+        nodes.push_back({address, port, publicKey});
+      }
+    }
+    if (!nodes.empty()) {
+      return nodes;
+    }
+  }
+  return DefaultBootstrapNodes();
+}
 }  // namespace
 
 MainWindow::MainWindow(QString const &profileName, QString const &password,
@@ -110,787 +214,988 @@ MainWindow::MainWindow(QString const &profileName, QString const &password,
       password_(password) {
   BuildUi_();
   WireSignals_();
+  ApplyTheme_();
+  StartTox_();
 }
 
 void MainWindow::BuildUi_() {
   auto *central = new QWidget(this);
   setCentralWidget(central);
-  setWindowTitle(QStringLiteral("IM"));
-  resize(1000, 650);
-  accountNameLabel_ = new QLabel(this);
-  accountNameLabel_->setStyleSheet(
-      QStringLiteral("font-weight: bold; font-size: 14pt; color: #4fc3f7;"));
+  setWindowTitle(QStringLiteral("Tox IM"));
+  resize(1080, 700);
+
+  accountNameLabel_ = new QLabel(profileName_, this);
   selfIdEdit_ = new QLineEdit(this);
   selfIdEdit_->setReadOnly(true);
-  selfIdEdit_->setFrame(false);
-  selfIdEdit_->setStyleSheet(
-      QStringLiteral("QLineEdit { "
-                     "  background: transparent; "
-                     "  color: #a0a0b0; "
-                     "  font-size: 9pt; "
-                     "  padding: 0px;"
-                     "  border: none;"
-                     "}"));
-  selfIdEdit_->setMinimumWidth(500);
-  auto nameLayout = new QHBoxLayout();
-  nameLayout->setSpacing(0);
-  nameLayout->addWidget(accountNameLabel_);
-  nameLayout->addStretch(1);
-  auto toxIdLayout = new QHBoxLayout();
-  toxIdLayout->setSpacing(0);
-  auto toxIdLabel = new QLabel(QString("ToxId: "), this);
-  toxIdLabel->setStyleSheet(QStringLiteral("color: #808090;"));
-  toxIdLayout->addWidget(toxIdLabel);
-  toxIdLayout->addWidget(selfIdEdit_);
-  toxIdLayout->addStretch(1);
-  statusBtn_ = new QPushButton(this);
-  statusBtn_->setFlat(true);
-  statusBtn_->setStyleSheet(
-      QStringLiteral("QPushButton { "
-                     "  text-align: left; "
-                     "  padding: 0px; "
-                     "  color: #808090; "
-                     "  font-size: 10pt; "
-                     "  border: none; "
-                     "  background: transparent; "
-                     "} "
-                     "QPushButton:hover { "
-                     "  color: #4fc3f7; "
-                     "  text-decoration: underline; "
-                     "}"));
-  statusBtn_->setCursor(Qt::PointingHandCursor);
+  selfIdEdit_->setPlaceholderText(QStringLiteral("Tox ID will appear after startup"));
+  networkStatusLabel_ = new QLabel(QStringLiteral("network: starting"), this);
+
   addFriendBtn_ = new QPushButton(QStringLiteral("add friend"), this);
   deleteFriendBtn_ = new QPushButton(QStringLiteral("delete friend"), this);
-  editNicknameBtn_ = new QPushButton(QStringLiteral("edit nick name"), this);
-  themeToggleBtn_ = new QPushButton(this);
-  themeToggleBtn_->setIcon(QIcon(QStringLiteral(":/moon.svg:")));
-  themeToggleBtn_->setIconSize(QSize(24, 24));
-  themeToggleBtn_->setToolTip(QStringLiteral("switch to light theme"));
-  themeToggleBtn_->setFixedSize(26, 26);
-  themeToggleBtn_->setStyleSheet(QStringLiteral(
-      "QPushButton { border-radius: 18px; border: none; background: "
-      "transparent; }"
-      "QPushButton:hover { background-color: rgba(255, 255, 255, 0.1); }"));
-  noticeBtn_ = new QPushButton(QStringLiteral("notice"), this);
-  noticeBtn_->setToolTip(
-      QStringLiteral("open the notice center (log/sign/config)"));
-  noticeBtn_->setFixedHeight(addFriendBtn_->sizeHint().height());
-  friendList_ = new QListWidget(this);
-  friendList_->setMinimumWidth(240);
-  groupList_ = new QListWidget(this);
-  groupList_->setMinimumWidth(240);
   createGroupBtn_ = new QPushButton(QStringLiteral("create group"), this);
-  inviteToGroupBtn_ = new QPushButton(QStringLiteral("invite to group"), this);
+  inviteToGroupBtn_ = new QPushButton(QStringLiteral("invite friend"), this);
   leaveGroupBtn_ = new QPushButton(QStringLiteral("leave group"), this);
-  contactTabWidget_ = new QTabWidget(this);
-  contactTabWidget_->addTab(friendList_, QStringLiteral("friend"));
-  contactTabWidget_->addTab(groupList_, QStringLiteral("group"));
-  contactTabWidget_->setMinimumWidth(240);
+  noticeBtn_ = new QPushButton(QStringLiteral("notice"), this);
+  themeToggleBtn_ = new QPushButton(this);
+
+  friendList_ = new QListWidget(this);
+  groupList_ = new QListWidget(this);
+  contactTabs_ = new QTabWidget(this);
+  contactTabs_->addTab(friendList_, QStringLiteral("friends"));
+  contactTabs_->addTab(groupList_, QStringLiteral("groups"));
+  contactTabs_->setMinimumWidth(270);
+
   chatView_ = new QTextBrowser(this);
   chatView_->setOpenExternalLinks(false);
   messageEdit_ = new ChatInputEdit(this);
   messageEdit_->setPlaceholderText(
-      QStringLiteral("input message, enter to send, shift+enter to new line"));
+      QStringLiteral("type a message, Enter sends, Shift+Enter adds a line"));
   sendBtn_ = new QPushButton(QStringLiteral("send"), this);
-  sendFileBtn_ = new QPushButton(QStringLiteral("send file"), this);
-  callBtn_ = new QPushButton(QStringLiteral("voice call"), this);
-  videoCallBtn_ = new QPushButton(QStringLiteral("video call"), this);
-  auto inputRow = new QHBoxLayout();
+
+  auto *headerText = new QVBoxLayout();
+  headerText->addWidget(accountNameLabel_);
+  headerText->addWidget(selfIdEdit_);
+  headerText->addWidget(networkStatusLabel_);
+
+  auto *headerButtons = new QHBoxLayout();
+  headerButtons->addWidget(addFriendBtn_);
+  headerButtons->addWidget(deleteFriendBtn_);
+  headerButtons->addSpacing(12);
+  headerButtons->addWidget(createGroupBtn_);
+  headerButtons->addWidget(inviteToGroupBtn_);
+  headerButtons->addWidget(leaveGroupBtn_);
+  headerButtons->addSpacing(12);
+  headerButtons->addWidget(noticeBtn_);
+  headerButtons->addWidget(themeToggleBtn_);
+
+  auto *header = new QHBoxLayout();
+  header->addLayout(headerText, 1);
+  header->addLayout(headerButtons);
+
+  auto *inputRow = new QHBoxLayout();
   inputRow->addWidget(messageEdit_, 1);
-  inputRow->addWidget(callBtn_);
-  inputRow->addWidget(videoCallBtn_);
-  inputRow->addWidget(sendFileBtn_);
   inputRow->addWidget(sendBtn_);
-  auto *right = new QWidget(this);
-  auto *rightLayout = new QVBoxLayout(right);
-  rightLayout->addWidget(chatView_, 1);
-  rightLayout->addLayout(inputRow);
-  right->setLayout(rightLayout);
+
+  auto *chatPanel = new QWidget(this);
+  auto *chatLayout = new QVBoxLayout(chatPanel);
+  chatLayout->addWidget(chatView_, 1);
+  chatLayout->addLayout(inputRow);
+
   auto *splitter = new QSplitter(this);
-  splitter->addWidget(contactTabWidget_);
-  splitter->addWidget(right);
+  splitter->addWidget(contactTabs_);
+  splitter->addWidget(chatPanel);
+  splitter->setStretchFactor(0, 0);
   splitter->setStretchFactor(1, 1);
-  auto *userInfoLayout = new QVBoxLayout();
-  userInfoLayout->setSpacing(2);
-  userInfoLayout->addLayout(nameLayout);
-  userInfoLayout->addLayout(toxIdLayout);
-  userInfoLayout->addWidget(statusBtn_);
-  auto *topRow = new QHBoxLayout();
-  topRow->addLayout(userInfoLayout, 1);
-  topRow->addWidget(addFriendBtn_);
-  topRow->addWidget(editNicknameBtn_);
-  topRow->addWidget(deleteFriendBtn_);
-  topRow->addWidget(createGroupBtn_);
-  topRow->addWidget(inviteToGroupBtn_);
-  topRow->addWidget(leaveGroupBtn_);
-  topRow->addWidget(noticeBtn_);
-  topRow->addWidget(themeToggleBtn_);
+
   auto *root = new QVBoxLayout(central);
-  root->addLayout(topRow);
+  root->addLayout(header);
   root->addWidget(splitter, 1);
-  central->setLayout(root);
-  iterateTimer_ = std::make_unique<QTimer>();
+
+  iterateTimer_ = new QTimer(this);
   iterateTimer_->setSingleShot(true);
-  friendListTimer_ = std::make_unique<QTimer>();
-  friendListTimer_->setInterval(1000);
-  saveTimer_ = std::make_unique<QTimer>();
-  saveTimer_->setSingleShot(true);
-  saveTimer_->setInterval(1500);
+  refreshTimer_ = new QTimer(this);
+  refreshTimer_->setInterval(1500);
+
+  SetupNotificationCenter_();
+  RenderCurrentConversation_();
 }
 
 void MainWindow::WireSignals_() {
-  // - addFriendBtn_->clicked -> onAddFriendClicked_()
-  //   打开添加好友对话框，并调用 tox_.addFriend(...) 发起好友请求
   connect(addFriendBtn_, &QPushButton::clicked, this,
           &MainWindow::OnAddFriendClicked_);
-  // - deleteFriendBtn_->clicked -> OnDeleteFriendClicked_()
-  //   删除当前选中的好友（本地删除 tox_friend_delete）
   connect(deleteFriendBtn_, &QPushButton::clicked, this,
           &MainWindow::OnDeleteFriendClicked_);
-  // - editNicknameBtn_->clicked -> OnEditNicknameClicked_()
-  //   编辑当前选中好友的备注名
-  connect(editNicknameBtn_, &QPushButton::clicked, this,
-          &MainWindow::OnEditNicknameClicked_);
-  // - sendBtn_->clicked / messageEdit_->returnPressed -> OnSendClicked_()
-  //   两种触发方式共用同一个发送逻辑：按钮点击或输入框回车都发送当前输入内容
   connect(sendBtn_, &QPushButton::clicked, this, &MainWindow::OnSendClicked_);
-
-  // - sendFileBtn_->clicked -> OnSendFileClicked_()
-  //   点击"发送文件"按钮，选择文件并发送给当前好友
-  connect(sendFileBtn_, &QPushButton::clicked, this,
-          &MainWindow::OnSendFileClicked_);
-
-  // - messageEdit_->enterPressed -> OnSendClicked_()
-  //   输入框回车时发送当前输入内容（Shift+回车换行）
-  connect(messageEdit_, &ChatInputEdit::enterPressed, this,
-          &MainWindow::OnSendClicked_);
-
-  // - friendList_->itemSelectionChanged -> onFriendSelectionChanged_()
-  //   用户切换聊天对象时触发（选中不同的 friend number）
-  connect(friendList_, &QListWidget::itemSelectionChanged, this,
-          &MainWindow::OnFriendSelectionChanged_);
-
-  // - iterateTimer_->timeout -> onIterateTick_()
-  //   把 toxcore 的 iterate() 接入 Qt 事件循环：每次 tick 执行 iterate
-  //   并调度下一次 tick
-  connect(iterateTimer_.get(), &QTimer::timeout, this,
-          &MainWindow::OnIterateTick_);
-
-  // - friendListTimer_->timeout -> refreshFriendList_()
-  //   演示用的周期刷新：定期从 toxcore 读取好友列表/在线状态并更新 UI
-  // connect(friendListTimer_.get(), &QTimer::timeout, this,
-  //         &MainWindow::RefreshFriendList_);
-
-  // - saveTimer_->timeout -> onSaveTick_()
-  connect(saveTimer_.get(), &QTimer::timeout, this, &MainWindow::OnSaveTick_);
-
-  // 音频/视频通话
-  connect(callBtn_, &QPushButton::clicked, this, &MainWindow::OnCallClicked_);
-  connect(videoCallBtn_, &QPushButton::clicked, this,
-          &MainWindow::OnVideoCallClicked_);
-
-  // 个签编辑
-  connect(statusBtn_, &QPushButton::clicked, this,
-          &MainWindow::OnEditStatusMessageClicked_);
-
-  // 主题切换
   connect(themeToggleBtn_, &QPushButton::clicked, this,
           &MainWindow::OnThemeToggleClicked_);
-
-  // 通知中心（日志/提示/配置）
-  connect(noticeBtn_, &QPushButton::clicked, this, [this]() {
-    if (!noticeDock_) {
-      return;
-    }
-    noticeDock_->setVisible(!noticeDock_->isVisible());
-    if (noticeDock_->isVisible()) {
-      noticeDock_->setFloating(true);
-      noticeDock_->raise();
-      noticeUnread_ = 0;
-      // UpdateNoticeButtonBadge_();
-    }
-  });
-
-  // 群聊功能
   connect(createGroupBtn_, &QPushButton::clicked, this,
           &MainWindow::OnCreateGroupClicked_);
   connect(inviteToGroupBtn_, &QPushButton::clicked, this,
           &MainWindow::OnInviteToGroupClicked_);
   connect(leaveGroupBtn_, &QPushButton::clicked, this,
           &MainWindow::OnLeaveGroupClicked_);
+  connect(friendList_, &QListWidget::itemSelectionChanged, this,
+          &MainWindow::OnFriendSelectionChanged_);
   connect(groupList_, &QListWidget::itemSelectionChanged, this,
           &MainWindow::OnGroupSelectionChanged_);
+  connect(iterateTimer_, &QTimer::timeout, this, &MainWindow::OnIterateTick_);
+  connect(refreshTimer_, &QTimer::timeout, this, &MainWindow::OnRefreshTick_);
+  connect(noticeBtn_, &QPushButton::clicked, this, [this]() {
+    if (!noticeDock_) {
+      return;
+    }
+    noticeDock_->setVisible(!noticeDock_->isVisible());
+    if (noticeDock_->isVisible()) {
+      noticeDock_->raise();
+      noticeUnread_ = 0;
+      UpdateNoticeBadge_();
+    }
+  });
+  messageEdit_->SetSubmitHandler([this]() { OnSendClicked_(); });
 }
 
-// 点击"添加好友"按钮：弹出对话框并发送好友请求
-void MainWindow::OnAddFriendClicked_() {
-  AddFriendDialog dlg(profileName_, this);
-  if (dlg.exec() != QDialog::Accepted) {
-    return;
-  }
+void MainWindow::ApplyTheme_() {
+  QString const base = isDarkTheme_ ? QStringLiteral("#12151c")
+                                    : QStringLiteral("#f5f7fb");
+  QString const panel = isDarkTheme_ ? QStringLiteral("#1b202b")
+                                     : QStringLiteral("#ffffff");
+  QString const text = isDarkTheme_ ? QStringLiteral("#e8ecf3")
+                                    : QStringLiteral("#1f2937");
+  QString const muted = isDarkTheme_ ? QStringLiteral("#9aa4b5")
+                                     : QStringLiteral("#5b6472");
+  QString const border = isDarkTheme_ ? QStringLiteral("#303747")
+                                      : QStringLiteral("#d7dde8");
+  QString const button = isDarkTheme_ ? QStringLiteral("#263244")
+                                      : QStringLiteral("#e8eef8");
 
-  std::string const toxId = dlg.ToxIdHex().toStdString();
-  std::string const msg = dlg.RequestMessage().toStdString();
+  setStyleSheet(QStringLiteral(R"(
+    QWidget { background:%1; color:%3; font-size:10pt; }
+    QLabel { color:%3; }
+    QLineEdit, QTextEdit, QTextBrowser, QListWidget {
+      background:%2; color:%3; border:1px solid %5; border-radius:8px; padding:6px;
+      selection-background-color:#3b82f6;
+    }
+    QPushButton {
+      background:%6; color:%3; border:1px solid %5; border-radius:8px; padding:7px 11px;
+    }
+    QPushButton:hover { border-color:#4fc3f7; }
+    QPushButton:disabled { color:%4; }
+    QTabWidget::pane { border:1px solid %5; border-radius:8px; }
+    QTabBar::tab { background:%6; color:%3; padding:8px 12px; border-top-left-radius:8px; border-top-right-radius:8px; }
+    QTabBar::tab:selected { background:%2; color:#4fc3f7; }
+    QSplitter::handle { background:%5; }
+  )")
+                    .arg(base, panel, text, muted, border, button));
+  accountNameLabel_->setStyleSheet(
+      QStringLiteral("font-size:18pt;font-weight:700;color:#4fc3f7;"));
+  networkStatusLabel_->setStyleSheet(QStringLiteral("color:%1;").arg(muted));
+  selfIdEdit_->setStyleSheet(
+      QStringLiteral("QLineEdit { color:%1; font-family:monospace; }").arg(muted));
+  themeToggleBtn_->setText(isDarkTheme_ ? QStringLiteral("light")
+                                        : QStringLiteral("dark"));
+}
+
+void MainWindow::StartTox_() {
   try {
-    uint32_t const fn =
-        tox_->AddFriend(toxId, msg.empty() ? std::string("hi") : msg);
-    AppendSystemMessage_(QStringLiteral("✓ 好友请求已发送，等待对方接受"),
-                         "#4caf50");
-    // contact & savedata
-    (void)FriendPubKeyHex_(fn);
-    ScheduleSaveTox_();
-    RefreshFriendList_();
+    tox_ = std::make_unique<ToxCore::ToxCoreWrapper>();
+    tox_->SetSelfName(profileName_.toStdString());
+    tox_->SetSelfStatusMessage("session-only profile");
+    selfIdEdit_->setText(QString::fromStdString(tox_->GetSelfAddressHex()));
+    networkStatusLabel_->setText(
+        QStringLiteral("network: %1").arg(ConnectionLabel_(selfConnection_)));
+
+    tox_->SetOnFriendRequest([this](std::string const &publicKeyHex,
+                                    std::string const &message) {
+      QString const publicKey = QString::fromStdString(publicKeyHex);
+      QString const requestMessage = FromUtf8(message);
+      QMetaObject::invokeMethod(
+          this,
+          [this, publicKey, requestMessage]() {
+            QMessageBox box(this);
+            box.setIcon(QMessageBox::Question);
+            box.setWindowTitle(QStringLiteral("friend request"));
+            box.setText(QStringLiteral("Accept friend request from %1?")
+                            .arg(publicKey.left(12)));
+            box.setInformativeText(requestMessage);
+            box.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
+            SetMsgBoxButtonText(box, QMessageBox::Yes, QStringLiteral("accept"));
+            SetMsgBoxButtonText(box, QMessageBox::No, QStringLiteral("reject"));
+            if (box.exec() == QMessageBox::Yes) {
+              try {
+                uint32_t const friendNumber =
+                    tox_->AddFriendNoRequest(publicKey.toStdString());
+                currentFriendNumber_ = friendNumber;
+                groupChatActive_ = false;
+                currentGroupNumber_ = kInvalidNumber;
+                AppendEventLine_(QStringLiteral("friend"),
+                                 QStringLiteral("accepted request from %1")
+                                     .arg(publicKey.left(12)));
+                RefreshFriendList_();
+                RenderCurrentConversation_();
+              } catch (std::exception const &e) {
+                QMessageBox::warning(this, QStringLiteral("friend request failed"),
+                                     QString::fromUtf8(e.what()));
+              }
+            } else {
+              AppendEventLine_(QStringLiteral("friend"),
+                               QStringLiteral("rejected request from %1")
+                                   .arg(publicKey.left(12)));
+            }
+          },
+          Qt::QueuedConnection);
+    });
+
+    tox_->SetOnFriendConnectionStatus(
+        [this](uint32_t friendNumber, TOX_CONNECTION status) {
+          friendConnectionCache_[friendNumber] = status;
+          AppendEventLine_(QStringLiteral("friend"),
+                           QStringLiteral("%1 is %2")
+                               .arg(GetFriendDisplayName_(friendNumber),
+                                    ConnectionLabel_(status)));
+          RefreshFriendList_();
+        });
+
+    tox_->SetOnFriendMessage([this](uint32_t friendNumber, TOX_MESSAGE_TYPE,
+                                    std::string const &message) {
+      QString const sender = GetFriendDisplayName_(friendNumber);
+      AppendFriendMessage_(friendNumber, sender, FromUtf8(message), false);
+      AppendEventLine_(QStringLiteral("friend"),
+                       QStringLiteral("message from %1").arg(sender));
+    });
+
+    tox_->SetOnConferenceInvite(
+        [this](uint32_t friendNumber, TOX_CONFERENCE_TYPE,
+               std::vector<uint8_t> const &cookie) {
+          QString const friendName = GetFriendDisplayName_(friendNumber);
+          QMetaObject::invokeMethod(
+              this,
+              [this, friendNumber, friendName, cookie]() {
+                QMessageBox box(this);
+                box.setIcon(QMessageBox::Question);
+                box.setWindowTitle(QStringLiteral("group invitation"));
+                box.setText(QStringLiteral("Join group invited by %1?")
+                                .arg(friendName));
+                box.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
+                SetMsgBoxButtonText(box, QMessageBox::Yes,
+                                    QStringLiteral("join"));
+                SetMsgBoxButtonText(box, QMessageBox::No,
+                                    QStringLiteral("reject"));
+                if (box.exec() == QMessageBox::Yes) {
+                  if (tox_->JoinConference(friendNumber, cookie)) {
+                    AppendEventLine_(QStringLiteral("group"),
+                                     QStringLiteral("accepted invitation from %1")
+                                         .arg(friendName));
+                  } else {
+                    QMessageBox::warning(this, QStringLiteral("group invitation"),
+                                         QStringLiteral("Failed to join group."));
+                  }
+                } else {
+                  AppendEventLine_(QStringLiteral("group"),
+                                   QStringLiteral("rejected invitation from %1")
+                                       .arg(friendName));
+                }
+              },
+              Qt::QueuedConnection);
+        });
+
+    tox_->SetOnConferenceConnected([this](uint32_t conferenceNumber) {
+      currentGroupNumber_ = conferenceNumber;
+      groupChatActive_ = true;
+      AppendEventLine_(QStringLiteral("group"),
+                       QStringLiteral("joined %1")
+                           .arg(GetGroupDisplayName_(conferenceNumber)));
+      RefreshGroupList_();
+      RenderCurrentConversation_();
+    });
+
+    tox_->SetOnConferenceMessage(
+        [this](uint32_t conferenceNumber, uint32_t peerNumber, TOX_MESSAGE_TYPE,
+               std::string const &message) {
+          QString sender = FromUtf8(tox_->GetConferencePeerName(conferenceNumber,
+                                                                peerNumber));
+          if (sender.isEmpty()) {
+            sender = QStringLiteral("peer %1").arg(peerNumber);
+          }
+          AppendGroupMessage_(conferenceNumber, sender, FromUtf8(message), false);
+          AppendEventLine_(QStringLiteral("group"),
+                           QStringLiteral("message in %1 from %2")
+                               .arg(GetGroupDisplayName_(conferenceNumber),
+                                    sender));
+        });
+
+    tox_->SetOnConferenceTitle([this](uint32_t conferenceNumber, uint32_t,
+                                      std::string const &title) {
+      AppendEventLine_(QStringLiteral("group"),
+                       QStringLiteral("%1 title is now %2")
+                           .arg(QStringLiteral("group"), FromUtf8(title)));
+      RefreshGroupList_();
+      if (groupChatActive_ && currentGroupNumber_ == conferenceNumber) {
+        RenderCurrentConversation_();
+      }
+    });
+
+    tox_->SetOnConferencePeerName([this](uint32_t conferenceNumber, uint32_t,
+                                         std::string const &) {
+      RefreshGroupList_();
+      if (groupChatActive_ && currentGroupNumber_ == conferenceNumber) {
+        RenderCurrentConversation_();
+      }
+    });
+
+    tox_->SetOnConferencePeerListChanged([this](uint32_t conferenceNumber) {
+      AppendEventLine_(QStringLiteral("group"),
+                       QStringLiteral("peer list changed in %1")
+                           .arg(GetGroupDisplayName_(conferenceNumber)));
+      RefreshGroupList_();
+      if (groupChatActive_ && currentGroupNumber_ == conferenceNumber) {
+        RenderCurrentConversation_();
+      }
+    });
+
+    AppendEventLine_(QStringLiteral("status"),
+                     QStringLiteral("session-only Tox identity created"));
+    BootstrapFromConfig_();
+    ScheduleIterate_();
+    refreshTimer_->start();
   } catch (std::exception const &e) {
-    QMessageBox msgBox(this);
-    msgBox.setIcon(QMessageBox::Warning);
-    msgBox.setWindowTitle(QStringLiteral("添加好友失败"));
-    msgBox.setText(QString::fromUtf8(e.what()));
-    msgBox.setStandardButtons(QMessageBox::Ok);
-    SetMsgBoxButtonText_(msgBox, QMessageBox::Ok, QStringLiteral("确认"));
-    msgBox.exec();
+    sendBtn_->setEnabled(false);
+    addFriendBtn_->setEnabled(false);
+    createGroupBtn_->setEnabled(false);
+    AppendEventLine_(QStringLiteral("status"),
+                     QStringLiteral("Tox startup failed: %1")
+                         .arg(QString::fromUtf8(e.what())));
+    QMessageBox::critical(this, QStringLiteral("Tox startup failed"),
+                          QString::fromUtf8(e.what()));
   }
 }
 
-// “删除好友”按钮处理：读取当前选中 friend number，二次确认后调用
-// tox_.deleteFriend 做本地删除
-void MainWindow::OnDeleteFriendClicked_() {
-  if (isAiChatActive_) {
-    QMessageBox msgBox(QMessageBox::Information, QStringLiteral("提示"),
-                       QStringLiteral("AI助手会话不支持该操作。"),
-                       QMessageBox::NoButton, this);
-    msgBox.addButton(QStringLiteral("确认"), QMessageBox::AcceptRole);
-    msgBox.exec();
-    return;
-  }
-  uint32_t const fn = CurrentFriendNumber_();
-  if (fn == UINT32_MAX) {
-    QMessageBox msgBox(this);
-    msgBox.setIcon(QMessageBox::Information);
-    msgBox.setWindowTitle(QStringLiteral("提示"));
-    msgBox.setText(QStringLiteral("请先选择要删除的好友。"));
-    msgBox.setStandardButtons(QMessageBox::Ok);
-    SetMsgBoxButtonText_(msgBox, QMessageBox::Ok, QStringLiteral("确认"));
-    msgBox.exec();
-    return;
-  }
-
-  // 获取好友显示名称
-  QString friendName = GetFriendDisplayName_(fn);
-
-  QMessageBox msgBox(this);
-  msgBox.setWindowTitle(QStringLiteral("删除好友"));
-  msgBox.setText(
-      QStringLiteral(
-          "确定要删除好友 %1 "
-          "吗？\n\n注意：这是本地删除，对方不会收到明确通知，但连接会断开。")
-          .arg(friendName));
-  msgBox.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
-  SetMsgBoxButtonText_(msgBox, QMessageBox::Yes, QStringLiteral("确认"));
-  SetMsgBoxButtonText_(msgBox, QMessageBox::No, QStringLiteral("取消"));
-
-  if (msgBox.exec() != QMessageBox::Yes) {
-    return;
-  }
-
-  try {
-    QString friendName = GetFriendDisplayName_(fn);
-    tox_->DeleteFriend(fn);
-    AppendSystemMessage_(QStringLiteral("✓ 已删除好友：%1").arg(friendName),
-                         "#ff9800");
-    friendConn_.remove(fn);
-    friendPk_.remove(fn);
-    lastSelectedFriend_ = UINT32_MAX;
-    ScheduleSaveTox_();
-    RefreshFriendList_();
-  } catch (std::exception const &e) {
-    QMessageBox msgBox(this);
-    msgBox.setIcon(QMessageBox::Warning);
-    msgBox.setWindowTitle(QStringLiteral("删除失败"));
-    msgBox.setText(QString::fromUtf8(e.what()));
-    msgBox.setStandardButtons(QMessageBox::Ok);
-    SetMsgBoxButtonText_(msgBox, QMessageBox::Ok, QStringLiteral("确认"));
-    msgBox.exec();
-  }
-}
-
-// 点击"编辑备注"按钮：修改当前选中好友的备注名
-void MainWindow::OnEditNicknameClicked_() {
-  if (isAiChatActive_) {
-    QMessageBox msgBox(QMessageBox::Information, QStringLiteral("提示"),
-                       QStringLiteral("AI助手会话不支持该操作。"),
-                       QMessageBox::NoButton, this);
-    msgBox.addButton(QStringLiteral("确认"), QMessageBox::AcceptRole);
-    msgBox.exec();
-    return;
-  }
-  uint32_t const fn = CurrentFriendNumber_();
-  if (fn == UINT32_MAX) {
-    QMessageBox msgBox(this);
-    msgBox.setIcon(QMessageBox::Information);
-    msgBox.setWindowTitle(QStringLiteral("提示"));
-    msgBox.setText(QStringLiteral("请先选择一个好友。"));
-    msgBox.setStandardButtons(QMessageBox::Ok);
-    SetMsgBoxButtonText_(msgBox, QMessageBox::Ok, QStringLiteral("确认"));
-    msgBox.exec();
-    return;
-  }
-
-  QString const pk = FriendPubKeyHex_(fn);
-  if (pk.isEmpty()) {
-    QMessageBox msgBox(this);
-    msgBox.setIcon(QMessageBox::Warning);
-    msgBox.setWindowTitle(QStringLiteral("错误"));
-    msgBox.setText(QStringLiteral("无法获取好友公钥。"));
-    msgBox.setStandardButtons(QMessageBox::Ok);
-    SetMsgBoxButtonText_(msgBox, QMessageBox::Ok, QStringLiteral("确认"));
-    msgBox.exec();
-    return;
-  }
-
-  // 获取当前备注
-  QString const currentNickname = store_.GetContactNickname(pk);
-
-  // 获取好友显示名称
-  QString friendName = GetFriendDisplayName_(fn);
-
-  // 弹出输入框
-  QInputDialog inputDlg(this);
-  inputDlg.setWindowTitle(QStringLiteral("编辑备注"));
-  inputDlg.setLabelText(
-      QStringLiteral("好友：%1\n\n请输入备注名（留空则清除备注）：")
-          .arg(friendName));
-  inputDlg.setTextValue(currentNickname);
-  inputDlg.setOkButtonText(QStringLiteral("确认"));
-  inputDlg.setCancelButtonText(QStringLiteral("取消"));
-
-  if (inputDlg.exec() != QDialog::Accepted) {
-    return;  // 用户取消
-  }
-  QString const newNickname = inputDlg.textValue();
-
-  // 设置备注
-  try {
-    store_.SetContactNickname(pk, newNickname.trimmed());
-    AppendSystemMessage_(
-        QStringLiteral("✓ 已设置好友备注：%1")
-            .arg(newNickname.isEmpty() ? QStringLiteral("（已清除）")
-                                       : newNickname),
-        "#2196f3");
-    RefreshFriendList_();  // 刷新列表显示
-  } catch (std::exception const &e) {
-    QMessageBox msgBox(this);
-    msgBox.setIcon(QMessageBox::Warning);
-    msgBox.setWindowTitle(QStringLiteral("设置失败"));
-    msgBox.setText(QString::fromUtf8(e.what()));
-    msgBox.setStandardButtons(QMessageBox::Ok);
-    SetMsgBoxButtonText_(msgBox, QMessageBox::Ok, QStringLiteral("确认"));
-    msgBox.exec();
-  }
-}
-
-// 点击"编辑个签"按钮：修改自己的状态消息
-void MainWindow::OnEditStatusMessageClicked_() {
+void MainWindow::BootstrapFromConfig_() {
   if (!tox_) {
     return;
   }
-
-  QString const currentStatus =
-      QString::fromStdString(tox_->GetSelfStatusMessage());
-  QInputDialog inputDlg(this);
-  inputDlg.setWindowTitle(QStringLiteral("设置个性签名"));
-  inputDlg.setLabelText(QStringLiteral("请输入新的个性签名："));
-  inputDlg.setTextValue(currentStatus);
-  inputDlg.setOkButtonText(QStringLiteral("确认"));
-  inputDlg.setCancelButtonText(QStringLiteral("取消"));
-
-  if (inputDlg.exec() != QDialog::Accepted) {
-    return;
-  }
-  QString const newStatus = inputDlg.textValue();
-
-  try {
-    tox_->SetSelfStatusMessage(newStatus.trimmed().toStdString());
-    QString const displayStatus = newStatus.trimmed();
-    if (displayStatus.isEmpty()) {
-      statusBtn_->setText(QStringLiteral("点击设置个签"));
-    } else {
-      statusBtn_->setText(displayStatus);
+  QStringList const paths{
+      QDir(QCoreApplication::applicationDirPath())
+          .filePath(QStringLiteral("bootstrap_nodes.json")),
+      QDir::current().filePath(QStringLiteral("bootstrap_nodes.json"))};
+  std::vector<BootstrapNode> const nodes = LoadBootstrapNodes(paths);
+  int connected = 0;
+  for (BootstrapNode const &node : nodes) {
+    try {
+      tox_->Bootstrap(node.address.toStdString(), node.port,
+                      node.publicKeyHex.toStdString());
+      try {
+        tox_->AddTcpRelay(node.address.toStdString(), node.port,
+                          node.publicKeyHex.toStdString());
+      } catch (...) {}
+      ++connected;
+      AppendEventLine_(QStringLiteral("network"),
+                       QStringLiteral("bootstrapped through %1:%2")
+                           .arg(node.address)
+                           .arg(node.port));
+    } catch (std::exception const &e) {
+      AppendEventLine_(QStringLiteral("network"),
+                       QStringLiteral("bootstrap failed for %1:%2 (%3)")
+                           .arg(node.address)
+                           .arg(node.port)
+                           .arg(QString::fromUtf8(e.what())));
     }
-    ScheduleSaveTox_();  // 触发保存
-  } catch (std::exception const &e) {
-    QMessageBox msgBox(this);
-    msgBox.setIcon(QMessageBox::Warning);
-    msgBox.setWindowTitle(QStringLiteral("设置失败"));
-    msgBox.setText(QString::fromUtf8(e.what()));
-    msgBox.setStandardButtons(QMessageBox::Ok);
-    SetMsgBoxButtonText_(msgBox, QMessageBox::Ok, QStringLiteral("确认"));
-    msgBox.exec();
+  }
+  if (connected == 0) {
+    AppendEventLine_(QStringLiteral("network"),
+                     QStringLiteral("no bootstrap node accepted the request"));
   }
 }
 
-// 点击"发送"按钮或回车：发送消息给当前好友或群聊
+void MainWindow::ScheduleIterate_() {
+  if (!tox_ || !iterateTimer_) {
+    return;
+  }
+  uint32_t const interval = tox_->IterationIntervalMs();
+  iterateTimer_->start(static_cast<int>(std::clamp<uint32_t>(interval, 10, 1000)));
+}
+
+void MainWindow::OnIterateTick_() {
+  if (!tox_) {
+    return;
+  }
+  try {
+    tox_->Iterate();
+    TOX_CONNECTION const connection = tox_->GetSelfConnectionStatus();
+    if (connection != selfConnection_) {
+      selfConnection_ = connection;
+      networkStatusLabel_->setText(
+          QStringLiteral("network: %1").arg(ConnectionLabel_(connection)));
+      AppendEventLine_(QStringLiteral("network"),
+                       QStringLiteral("network is %1")
+                           .arg(ConnectionLabel_(connection)));
+    }
+  } catch (std::exception const &e) {
+    AppendEventLine_(QStringLiteral("status"),
+                     QStringLiteral("iterate failed: %1")
+                         .arg(QString::fromUtf8(e.what())));
+  }
+  ScheduleIterate_();
+}
+
+void MainWindow::OnRefreshTick_() {
+  RefreshFriendList_();
+  RefreshGroupList_();
+}
+
+void MainWindow::RefreshFriendList_() {
+  if (!tox_ || !friendList_) {
+    return;
+  }
+  QSignalBlocker const blocker(friendList_);
+  uint32_t const selected = currentFriendNumber_;
+  friendList_->clear();
+  bool selectedStillExists = false;
+
+  try {
+    for (uint32_t const friendNumber : tox_->GetFriendList()) {
+      TOX_CONNECTION connection = TOX_CONNECTION_NONE;
+      try {
+        connection = tox_->GetFriendConnectionStatus(friendNumber);
+      } catch (...) {}
+      friendConnectionCache_[friendNumber] = connection;
+
+      QString text = QStringLiteral("%1 — %2")
+                         .arg(GetFriendDisplayName_(friendNumber),
+                              ConnectionLabel_(connection));
+      int const unread = friendUnreadCount_.value(friendNumber, 0);
+      if (unread > 0) {
+        text += QStringLiteral(" (%1)").arg(unread);
+      }
+
+      auto *item = new QListWidgetItem(text, friendList_);
+      item->setData(Qt::UserRole, friendNumber);
+      item->setToolTip(FriendPubKeyHex_(friendNumber));
+      if (friendNumber == selected) {
+        item->setSelected(true);
+        friendList_->setCurrentItem(item);
+        selectedStillExists = true;
+      }
+    }
+  } catch (std::exception const &e) {
+    AppendEventLine_(QStringLiteral("friend"),
+                     QStringLiteral("friend refresh failed: %1")
+                         .arg(QString::fromUtf8(e.what())));
+  }
+
+  if (!selectedStillExists && !groupChatActive_) {
+    currentFriendNumber_ = kInvalidNumber;
+  }
+}
+
+uint32_t MainWindow::CurrentFriendNumber_() const {
+  if (auto const *item = friendList_ ? friendList_->currentItem() : nullptr) {
+    bool ok = false;
+    uint const value = item->data(Qt::UserRole).toUInt(&ok);
+    if (ok) {
+      return value;
+    }
+  }
+  return currentFriendNumber_;
+}
+
+QString MainWindow::FriendPubKeyHex_(uint32_t friendNumber) {
+  if (friendNumber == kInvalidNumber || !tox_) {
+    return {};
+  }
+  if (friendPublicKeyCache_.contains(friendNumber)) {
+    return friendPublicKeyCache_.value(friendNumber);
+  }
+  try {
+    QString const publicKey =
+        QString::fromStdString(tox_->GetFriendPublicKeyHex(friendNumber));
+    friendPublicKeyCache_[friendNumber] = publicKey;
+    return publicKey;
+  } catch (...) {
+    return {};
+  }
+}
+
+QString MainWindow::GetFriendDisplayName_(uint32_t friendNumber) const {
+  if (!tox_ || friendNumber == kInvalidNumber) {
+    return QStringLiteral("friend");
+  }
+  try {
+    QString const name = FromUtf8(tox_->GetFriendName(friendNumber)).trimmed();
+    if (!name.isEmpty()) {
+      return name;
+    }
+    QString const publicKey =
+        QString::fromStdString(tox_->GetFriendPublicKeyHex(friendNumber));
+    if (!publicKey.isEmpty()) {
+      return QStringLiteral("friend %1").arg(publicKey.left(8));
+    }
+  } catch (...) {}
+  return QStringLiteral("friend %1").arg(friendNumber);
+}
+
+void MainWindow::RefreshGroupList_() {
+  if (!tox_ || !groupList_) {
+    return;
+  }
+  QSignalBlocker const blocker(groupList_);
+  uint32_t const selected = currentGroupNumber_;
+  groupList_->clear();
+  bool selectedStillExists = false;
+
+  for (uint32_t const conferenceNumber : tox_->GetConferenceList()) {
+    QString text = QStringLiteral("%1 — %2 peers")
+                       .arg(GetGroupDisplayName_(conferenceNumber))
+                       .arg(tox_->GetConferencePeerCount(conferenceNumber));
+    int const unread = groupUnreadCount_.value(conferenceNumber, 0);
+    if (unread > 0) {
+      text += QStringLiteral(" (%1)").arg(unread);
+    }
+
+    auto *item = new QListWidgetItem(text, groupList_);
+    item->setData(Qt::UserRole, conferenceNumber);
+    item->setToolTip(GetGroupPeerNames_(conferenceNumber).join(QStringLiteral("\n")));
+    if (conferenceNumber == selected) {
+      item->setSelected(true);
+      groupList_->setCurrentItem(item);
+      selectedStillExists = true;
+    }
+  }
+
+  if (!selectedStillExists && groupChatActive_) {
+    currentGroupNumber_ = kInvalidNumber;
+    groupChatActive_ = false;
+  }
+}
+
+uint32_t MainWindow::CurrentGroupNumber_() const {
+  if (auto const *item = groupList_ ? groupList_->currentItem() : nullptr) {
+    bool ok = false;
+    uint const value = item->data(Qt::UserRole).toUInt(&ok);
+    if (ok) {
+      return value;
+    }
+  }
+  return currentGroupNumber_;
+}
+
+QString MainWindow::GetGroupDisplayName_(uint32_t conferenceNumber) const {
+  if (!tox_ || conferenceNumber == kInvalidNumber) {
+    return QStringLiteral("group");
+  }
+  QString title = FromUtf8(tox_->GetConferenceTitle(conferenceNumber)).trimmed();
+  if (!title.isEmpty()) {
+    return title;
+  }
+  return QStringLiteral("group %1").arg(conferenceNumber);
+}
+
+QStringList MainWindow::GetGroupPeerNames_(uint32_t conferenceNumber) const {
+  QStringList names;
+  if (!tox_ || conferenceNumber == kInvalidNumber) {
+    return names;
+  }
+  uint32_t const count = tox_->GetConferencePeerCount(conferenceNumber);
+  for (uint32_t peer = 0; peer < count; ++peer) {
+    QString name = FromUtf8(tox_->GetConferencePeerName(conferenceNumber, peer))
+                       .trimmed();
+    if (name.isEmpty()) {
+      name = QStringLiteral("peer %1").arg(peer);
+    }
+    names.push_back(name);
+  }
+  return names;
+}
+
+void MainWindow::OnAddFriendClicked_() {
+  if (!tox_) {
+    return;
+  }
+  AddFriendDialog dialog(profileName_, this);
+  if (dialog.exec() != QDialog::Accepted) {
+    return;
+  }
+  QString toxId = dialog.ToxIdHex();
+  toxId.remove(QChar(' '));
+  QString message = dialog.RequestMessage().trimmed();
+  if (message.isEmpty()) {
+    message = QStringLiteral("hello");
+  }
+  try {
+    uint32_t const friendNumber =
+        tox_->AddFriend(toxId.toStdString(), message.toStdString());
+    currentFriendNumber_ = friendNumber;
+    groupChatActive_ = false;
+    currentGroupNumber_ = kInvalidNumber;
+    AppendSystemMessage_(QStringLiteral("friend request sent"),
+                         QStringLiteral("#81c784"));
+    AppendEventLine_(QStringLiteral("friend"),
+                     QStringLiteral("request sent to %1").arg(toxId.left(12)));
+    RefreshFriendList_();
+    RenderCurrentConversation_();
+  } catch (std::exception const &e) {
+    QMessageBox::warning(this, QStringLiteral("add friend failed"),
+                         QString::fromUtf8(e.what()));
+  }
+}
+
+void MainWindow::OnDeleteFriendClicked_() {
+  uint32_t const friendNumber = CurrentFriendNumber_();
+  if (!tox_ || friendNumber == kInvalidNumber) {
+    QMessageBox::information(this, QStringLiteral("delete friend"),
+                             QStringLiteral("Select a friend first."));
+    return;
+  }
+  QString const name = GetFriendDisplayName_(friendNumber);
+  QMessageBox box(this);
+  box.setIcon(QMessageBox::Question);
+  box.setWindowTitle(QStringLiteral("delete friend"));
+  box.setText(QStringLiteral("Delete %1 locally?").arg(name));
+  box.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
+  SetMsgBoxButtonText(box, QMessageBox::Yes, QStringLiteral("delete"));
+  SetMsgBoxButtonText(box, QMessageBox::No, QStringLiteral("cancel"));
+  if (box.exec() != QMessageBox::Yes) {
+    return;
+  }
+
+  try {
+    tox_->DeleteFriend(friendNumber);
+    friendUnreadCount_.remove(friendNumber);
+    friendConnectionCache_.remove(friendNumber);
+    friendPublicKeyCache_.remove(friendNumber);
+    friendChatLines_.remove(friendNumber);
+    currentFriendNumber_ = kInvalidNumber;
+    AppendEventLine_(QStringLiteral("friend"),
+                     QStringLiteral("deleted %1").arg(name));
+    RefreshFriendList_();
+    RenderCurrentConversation_();
+  } catch (std::exception const &e) {
+    QMessageBox::warning(this, QStringLiteral("delete friend failed"),
+                         QString::fromUtf8(e.what()));
+  }
+}
+
 void MainWindow::OnSendClicked_() {
-  QString const text = messageEdit_->ToPlainText().trimmed();
+  if (!tox_) {
+    return;
+  }
+  QString const text = messageEdit_->toPlainText().trimmed();
   if (text.isEmpty()) {
     return;
   }
 
-  if (isAiChatActive_) {
-    SendAiMessage_(text);
+  if (groupChatActive_) {
+    uint32_t const conferenceNumber = CurrentGroupNumber_();
+    if (conferenceNumber == kInvalidNumber) {
+      QMessageBox::information(this, QStringLiteral("send message"),
+                               QStringLiteral("Select a group first."));
+      return;
+    }
+    if (!tox_->SendConferenceMessage(conferenceNumber, text.toStdString())) {
+      QMessageBox::warning(this, QStringLiteral("send message failed"),
+                           QStringLiteral("Group message was not accepted."));
+      return;
+    }
+    AppendGroupMessage_(conferenceNumber, QStringLiteral("me"), text, true);
+    messageEdit_->clear();
     return;
   }
 
-  // 检查是会议聊天还是好友聊天
-  if (isConferenceChatActive_ && currentConferenceNumber_ != UINT32_MAX) {
-    // 会议消息发送
-    qint64 now = QDateTime::currentMSecsSinceEpoch();
-    bool success = tox_->SendConferenceMessage(currentConferenceNumber_,
-                                               text.toStdString());
-
-    if (success) {
-      // 显示自己发送的消息（isHistoryMe=true 表示是自己，名字显示"我"）
-      AppendConferenceChatLine_(currentConferenceNumber_, UINT32_MAX, text,
-                                {.timestampMs = now,
-                                 .isHistoryMe = true,
-                                 .senderNameOverride = QStringLiteral("我")});
-
-      // 保存到数据库
-      try {
-        QString confId = ConferenceIdentifier_(currentConferenceNumber_);
-        if (!confId.isEmpty()) {
-          std::string selfPubKey = tox_->GetSelfAddressHex().substr(0, 64);
-          std::string selfName = tox_->GetSelfName();
-
-          store_.InsertConferenceMessage(confId,
-                                         QString::fromStdString(selfPubKey),
-                                         QString::fromStdString(selfName),
-                                         1,  // outgoing
-                                         text, now);
-        }
-      } catch (std::exception const &e) {
-        qWarning() << "Failed to save conference message:" << e.what();
-      }
-
-      messageEdit_->clear();
-    } else {
-      QMessageBox::warning(this, QStringLiteral("发送失败"),
-                           QStringLiteral("群聊消息发送失败"));
-    }
-  } else {
-    // 好友消息发送
-    uint32_t const fn = CurrentFriendNumber_();
-    if (fn == UINT32_MAX) {
-      QMessageBox msgBox(this);
-      msgBox.setIcon(QMessageBox::Information);
-      msgBox.setWindowTitle(QStringLiteral("提示"));
-      msgBox.setText(QStringLiteral("请先选择一个好友或群聊。"));
-      msgBox.setStandardButtons(QMessageBox::Ok);
-      SetMsgBoxButtonText_(msgBox, QMessageBox::Ok, QStringLiteral("确认"));
-      msgBox.exec();
-      return;
-    }
-
-    try {
-      qint64 now = QDateTime::currentMSecsSinceEpoch();
-      (void)tox_->SendFriendMessage(fn, text.toStdString());
-      AppendChatLine_(fn, true, text, {.timestampMs = now});
-
-      // 落库：outgoing (direction=1)
-      try {
-        QString const pk = FriendPubKeyHex_(fn);
-        if (!pk.isEmpty()) {
-          store_.InsertMessage(pk, 1, static_cast<int>(TOX_MESSAGE_TYPE_NORMAL),
-                               text, now);
-        }
-      } catch (...) {}
-
-      messageEdit_->clear();
-    } catch (std::exception const &e) {
-      QMessageBox msgBox(this);
-      msgBox.setIcon(QMessageBox::Warning);
-      msgBox.setWindowTitle(QStringLiteral("发送失败"));
-      msgBox.setText(QString::fromUtf8(e.what()));
-      msgBox.setStandardButtons(QMessageBox::Ok);
-      SetMsgBoxButtonText_(msgBox, QMessageBox::Ok, QStringLiteral("确认"));
-      msgBox.exec();
-    }
+  uint32_t const friendNumber = CurrentFriendNumber_();
+  if (friendNumber == kInvalidNumber) {
+    QMessageBox::information(this, QStringLiteral("send message"),
+                             QStringLiteral("Select a friend or group first."));
+    return;
+  }
+  try {
+    tox_->SendFriendMessage(friendNumber, text.toStdString());
+    AppendFriendMessage_(friendNumber, QStringLiteral("me"), text, true);
+    messageEdit_->clear();
+  } catch (std::exception const &e) {
+    QMessageBox::warning(this, QStringLiteral("send message failed"),
+                         QString::fromUtf8(e.what()));
   }
 }
 
-// 点击"音频通话"按钮：发起音频通话（打开通话窗口并调用 toxcore API）
-void MainWindow::OnCallClicked_() {
-  if (isAiChatActive_) {
-    QMessageBox msgBox(QMessageBox::Information, QStringLiteral("提示"),
-                       QStringLiteral("AI助手会话不支持语音通话。"),
-                       QMessageBox::NoButton, this);
-    msgBox.addButton(QStringLiteral("确认"), QMessageBox::AcceptRole);
-    msgBox.exec();
-    return;
-  }
-  uint32_t const fn = CurrentFriendNumber_();
-  if (fn == UINT32_MAX) {
-    QMessageBox msgBox(this);
-    msgBox.setIcon(QMessageBox::Information);
-    msgBox.setWindowTitle(QStringLiteral("提示"));
-    msgBox.setText(QStringLiteral("请先选择一个好友。"));
-    msgBox.setStandardButtons(QMessageBox::Ok);
-    SetMsgBoxButtonText_(msgBox, QMessageBox::Ok, QStringLiteral("确认"));
-    msgBox.exec();
-    return;
-  }
-
-  // 打开呼叫窗口
-  if (callWindow_) {
-    callWindow_->close();
-    callWindow_ = nullptr;
-  }
-
-  currentCallFriend_ = fn;
-  videoEnabled_ = false;  // 音频通话
-  currentCallOutgoing_ = true;
-  localHangupPending_ = false;
-  callHangupRecorded_ = false;
-  callAnswered_ = false;
-
-  // 获取好友显示名称
-  QString friendName = GetFriendDisplayName_(fn);
-  callWindow_ = new CallWindow(fn, friendName, false, false,
-                               this);  // false=去电, false=无视频
-
-                                       // 设置挂断回调
-  callWindow_->SetOnHangup([this, fn]() {
-    localHangupPending_ = true;
-    if (!callHangupRecorded_) {
-      QString statusKey;
-      int duration = callWindow_ ? callWindow_->GetCallDuration() : 0;
-      if (callAnswered_) {
-        statusKey = QStringLiteral("HANGUP_SELF");
-      } else {
-        statusKey = currentCallOutgoing_ ? QStringLiteral("CANCEL_SELF")
-                                         : QStringLiteral("REJECT_SELF");
-      }
-      AppendCallRecord_(fn, true, false, duration, false,
-                        {.statusKey = statusKey});
-      callHangupRecorded_ = true;
-    }
-    tox_->Hangup(fn);
-    inCall_ = false;
-    videoEnabled_ = false;
-    currentCallFriend_ = UINT32_MAX;
-  });
-
-  // 设置通话结束回调（显示通话记录）
-  callWindow_->SetOnCallFinished([this, fn](int durationSeconds) {
-    // 如果已经在挂断回调中记录过，且是本地主动挂断/取消，跳过
-    if (localHangupPending_ && callHangupRecorded_) {
-      localHangupPending_ = false;
-      callHangupRecorded_ = false;
-      callAnswered_ = false;
-      return;
-    }
-
-    // 去电场景，对方触发的结束
-    QString statusKey;
-    if (callAnswered_) {
-      // 已接通，对方挂断
-      statusKey = QStringLiteral("HANGUP_REMOTE");
-    } else {
-      // 未接通，对方拒绝
-      statusKey = QStringLiteral("REJECT_REMOTE");
-    }
-
-    AppendCallRecord_(fn, true, false, durationSeconds, false,
-                      {.statusKey = statusKey});
-    localHangupPending_ = false;
-    callHangupRecorded_ = false;
-    callAnswered_ = false;
-  });
-
-  // 发起音频呼叫（使用默认参数：audioEnabled=true, videoEnabled=false）
-  if (tox_->Call(fn, {.audioEnabled = true,
-                      .videoEnabled = false,
-                      .audioBitrateKbps = static_cast<uint32_t>(
-                          qMax(1, avConfig_.audio.bitrateKbps)),
-                      .videoBitrateKbps = static_cast<uint32_t>(
-                          qMax(1, avConfig_.video.bitrateKbps))}) == 0) {
-    inCall_ = true;
-    callWindow_->show();
-  } else {
-    callWindow_->close();
-    callWindow_ = nullptr;
-    currentCallFriend_ = UINT32_MAX;
-  }
-}
-
-// 点击"视频通话"按钮：发起视频通话（打开通话窗口、启动摄像头）
-void MainWindow::OnVideoCallClicked_() {
-  if (isAiChatActive_) {
-    QMessageBox msgBox(QMessageBox::Information, QStringLiteral("提示"),
-                       QStringLiteral("AI助手会话不支持视频通话。"),
-                       QMessageBox::NoButton, this);
-    msgBox.addButton(QStringLiteral("确认"), QMessageBox::AcceptRole);
-    msgBox.exec();
-    return;
-  }
-  uint32_t const fn = CurrentFriendNumber_();
-  if (fn == UINT32_MAX) {
-    QMessageBox msgBox(this);
-    msgBox.setIcon(QMessageBox::Information);
-    msgBox.setWindowTitle(QStringLiteral("提示"));
-    msgBox.setText(QStringLiteral("请先选择一个好友。"));
-    msgBox.setStandardButtons(QMessageBox::Ok);
-    SetMsgBoxButtonText_(msgBox, QMessageBox::Ok, QStringLiteral("确认"));
-    msgBox.exec();
-    return;
-  }
-
-  // 打开视频呼叫窗口
-  if (callWindow_) {
-    callWindow_->close();
-    callWindow_ = nullptr;
-  }
-
-  currentCallFriend_ = fn;
-  videoEnabled_ = true;  // 视频通话
-  currentCallOutgoing_ = true;
-  localHangupPending_ = false;
-  callHangupRecorded_ = false;
-  callAnswered_ = false;
-
-  // 获取好友显示名称
-  QString friendName = GetFriendDisplayName_(fn);
-  callWindow_ = new CallWindow(fn, friendName, false, true,
-                               this);  // false=去电, true=视频
-
-                                       // 设置挂断回调
-  callWindow_->SetOnHangup([this, fn]() {
-    localHangupPending_ = true;
-    if (!callHangupRecorded_) {
-      QString statusKey;
-      int duration = callWindow_ ? callWindow_->GetCallDuration() : 0;
-      if (callAnswered_) {
-        statusKey = QStringLiteral("HANGUP_SELF");
-      } else {
-        statusKey = currentCallOutgoing_ ? QStringLiteral("CANCEL_SELF")
-                                         : QStringLiteral("REJECT_SELF");
-      }
-      AppendCallRecord_(fn, true, true, duration, false,
-                        {.statusKey = statusKey});
-      callHangupRecorded_ = true;
-    }
-    tox_->Hangup(fn);
-    inCall_ = false;
-    videoEnabled_ = false;
-    currentCallFriend_ = UINT32_MAX;
-
-    // 停止摄像头
-    if (video_) {
-      video_->StopCamera();
-    }
-  });
-
-  // 设置通话结束回调（显示通话记录）
-  callWindow_->SetOnCallFinished([this, fn](int durationSeconds) {
-    // 如果已经在挂断回调中记录过，且是本地主动挂断/取消，跳过
-    if (localHangupPending_ && callHangupRecorded_) {
-      localHangupPending_ = false;
-      callHangupRecorded_ = false;
-      callAnswered_ = false;
-      return;
-    }
-
-    // 去电场景，对方触发的结束
-    QString statusKey;
-    if (callAnswered_) {
-      // 已接通，对方挂断
-      statusKey = QStringLiteral("HANGUP_REMOTE");
-    } else {
-      // 未接通，对方拒绝
-      statusKey = QStringLiteral("REJECT_REMOTE");
-    }
-
-    AppendCallRecord_(fn, true, true, durationSeconds, false,
-                      {.statusKey = statusKey});
-    localHangupPending_ = false;
-    callHangupRecorded_ = false;
-    callAnswered_ = false;
-  });
-
-  // 发起视频呼叫（audioEnabled=true, videoEnabled=true）
-  if (tox_->Call(fn, {.audioEnabled = true,
-                      .videoEnabled = true,
-                      .audioBitrateKbps = static_cast<uint32_t>(
-                          qMax(1, avConfig_.audio.bitrateKbps)),
-                      .videoBitrateKbps = static_cast<uint32_t>(
-                          qMax(1, avConfig_.video.bitrateKbps))}) == 0) {
-    inCall_ = true;
-
-    // 启动摄像头并设置本地预览
-    if (video_) {
-      video_->SetLocalPreviewSink(callWindow_->GetLocalVideoSink());
-      video_->StartCamera();
-
-      // 连接远程视频信号
-      connect(video_.get(), &VideoManager::RemoteFrameReady, callWindow_,
-              &CallWindow::RenderRemoteFrame);
-    }
-
-    callWindow_->show();
-  } else {
-    callWindow_->close();
-    callWindow_ = nullptr;
-    videoEnabled_ = false;
-    currentCallFriend_ = UINT32_MAX;
-  }
-}
-
-// 好友选择变化：切换到选中的好友/AI助手并加载历史消息
 void MainWindow::OnFriendSelectionChanged_() {
-  // 先判断是否选中了 AI 助手
-  if (IsAiChatActive_()) {
+  uint32_t const friendNumber = CurrentFriendNumber_();
+  if (friendNumber == kInvalidNumber) {
+    return;
+  }
+  {
+    QSignalBlocker const blocker(groupList_);
     groupList_->clearSelection();
-    currentConferenceNumber_ = UINT32_MAX;
-    isConferenceChatActive_ = false;
-    lastSelectedFriend_ = UINT32_MAX;
+    groupList_->setCurrentItem(nullptr);
+  }
+  groupChatActive_ = false;
+  currentGroupNumber_ = kInvalidNumber;
+  currentFriendNumber_ = friendNumber;
+  friendUnreadCount_.remove(friendNumber);
+  RefreshFriendList_();
+  RenderCurrentConversation_();
+}
 
-    if (isAiChatActive_) {
-      return;
+void MainWindow::OnThemeToggleClicked_() {
+  isDarkTheme_ = !isDarkTheme_;
+  ApplyTheme_();
+}
+
+void MainWindow::OnCreateGroupClicked_() {
+  if (!tox_) {
+    return;
+  }
+  bool ok = false;
+  QString const title = QInputDialog::getText(
+      this, QStringLiteral("create group"), QStringLiteral("group title"),
+      QLineEdit::Normal, QStringLiteral("group"), &ok);
+  if (!ok) {
+    return;
+  }
+
+  uint32_t const conferenceNumber = tox_->CreateConference();
+  if (conferenceNumber == kInvalidNumber) {
+    QMessageBox::warning(this, QStringLiteral("create group failed"),
+                         QStringLiteral("Tox did not create the group."));
+    return;
+  }
+  if (!title.trimmed().isEmpty()) {
+    tox_->SetConferenceTitle(conferenceNumber, title.trimmed().toStdString());
+  }
+  currentGroupNumber_ = conferenceNumber;
+  currentFriendNumber_ = kInvalidNumber;
+  groupChatActive_ = true;
+  AppendEventLine_(QStringLiteral("group"),
+                   QStringLiteral("created %1")
+                       .arg(GetGroupDisplayName_(conferenceNumber)));
+  RefreshGroupList_();
+  RenderCurrentConversation_();
+}
+
+void MainWindow::OnInviteToGroupClicked_() {
+  if (!tox_) {
+    return;
+  }
+  uint32_t const conferenceNumber = CurrentGroupNumber_();
+  if (conferenceNumber == kInvalidNumber) {
+    QMessageBox::information(this, QStringLiteral("invite friend"),
+                             QStringLiteral("Select a group first."));
+    return;
+  }
+
+  std::vector<uint32_t> const friends = tox_->GetFriendList();
+  if (friends.empty()) {
+    QMessageBox::information(this, QStringLiteral("invite friend"),
+                             QStringLiteral("No friends are available."));
+    return;
+  }
+
+  QStringList choices;
+  choices.reserve(static_cast<qsizetype>(friends.size()));
+  for (uint32_t const friendNumber : friends) {
+    QString publicKey = FriendPubKeyHex_(friendNumber);
+    if (publicKey.isEmpty()) {
+      publicKey = QString::number(friendNumber);
     }
-    isAiChatActive_ = true;
+    choices.push_back(QStringLiteral("%1 — %2 — %3")
+                          .arg(GetFriendDisplayName_(friendNumber))
+                          .arg(ConnectionLabel_(friendConnectionCache_.value(
+                              friendNumber, TOX_CONNECTION_NONE)))
+                          .arg(publicKey.left(12)));
+  }
 
-    chatView_->clear();
-    lastDisplayedDate_ = QDate();
-    LoadRecentAiMessages_();
+  bool ok = false;
+  QString const selected = QInputDialog::getItem(
+      this, QStringLiteral("invite friend"), QStringLiteral("friend"), choices, 0,
+      false, &ok);
+  if (!ok) {
+    return;
+  }
+  int const index = choices.indexOf(selected);
+  if (index < 0 || index >= static_cast<int>(friends.size())) {
+    return;
+  }
+  uint32_t const friendNumber = friends[static_cast<size_t>(index)];
+  if (!tox_->InviteFriendToConference(friendNumber, conferenceNumber)) {
+    QMessageBox::warning(this, QStringLiteral("invite friend failed"),
+                         QStringLiteral("Tox did not send the group invitation."));
+    return;
+  }
+  AppendEventLine_(QStringLiteral("group"),
+                   QStringLiteral("invited %1 to %2")
+                       .arg(GetFriendDisplayName_(friendNumber),
+                            GetGroupDisplayName_(conferenceNumber)));
+}
+
+void MainWindow::OnGroupSelectionChanged_() {
+  uint32_t const conferenceNumber = CurrentGroupNumber_();
+  if (conferenceNumber == kInvalidNumber) {
+    return;
+  }
+  {
+    QSignalBlocker const blocker(friendList_);
+    friendList_->clearSelection();
+    friendList_->setCurrentItem(nullptr);
+  }
+  groupChatActive_ = true;
+  currentGroupNumber_ = conferenceNumber;
+  currentFriendNumber_ = kInvalidNumber;
+  groupUnreadCount_.remove(conferenceNumber);
+  RefreshGroupList_();
+  RenderCurrentConversation_();
+}
+
+void MainWindow::OnLeaveGroupClicked_() {
+  uint32_t const conferenceNumber = CurrentGroupNumber_();
+  if (!tox_ || conferenceNumber == kInvalidNumber) {
+    QMessageBox::information(this, QStringLiteral("leave group"),
+                             QStringLiteral("Select a group first."));
+    return;
+  }
+  QString const name = GetGroupDisplayName_(conferenceNumber);
+  QMessageBox box(this);
+  box.setIcon(QMessageBox::Question);
+  box.setWindowTitle(QStringLiteral("leave group"));
+  box.setText(QStringLiteral("Leave %1?").arg(name));
+  box.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
+  SetMsgBoxButtonText(box, QMessageBox::Yes, QStringLiteral("leave"));
+  SetMsgBoxButtonText(box, QMessageBox::No, QStringLiteral("cancel"));
+  if (box.exec() != QMessageBox::Yes) {
     return;
   }
 
-  // 以下为选中真实好友的原有逻辑
-  isAiChatActive_ = false;
-
-  uint32_t const fn = CurrentFriendNumber_();
-  if (fn == UINT32_MAX) {
+  if (!tox_->DeleteConference(conferenceNumber)) {
+    QMessageBox::warning(this, QStringLiteral("leave group failed"),
+                         QStringLiteral("Tox did not leave the group."));
     return;
   }
+  groupUnreadCount_.remove(conferenceNumber);
+  groupChatLines_.remove(conferenceNumber);
+  currentGroupNumber_ = kInvalidNumber;
+  groupChatActive_ = false;
+  AppendEventLine_(QStringLiteral("group"), QStringLiteral("left %1").arg(name));
+  RefreshGroupList_();
+  RenderCurrentConversation_();
+}
 
-  // 清除会议选择
-  groupList_->clearSelection();
-  currentConferenceNumber_ = UINT32_MAX;
-  isConferenceChatActive_ = false;
+void MainWindow::AppendSystemMessage_(QString const &text, QString const &color) {
+  chatView_->append(QStringLiteral(
+                        "<div style='text-align:center;color:%1;margin:10px;'>%2</div>")
+                        .arg(color, text.toHtmlEscaped()));
+}
 
-  // 清楚改好友的未读计数
-  if (friendUnreadCount_.value(fn, 0) > 0) {
-    friendUnreadCount_.remove(fn);
+void MainWindow::AppendFriendMessage_(uint32_t friendNumber, QString const &sender,
+                                      QString const &message, bool outgoing) {
+  QString const line = ChatLine(sender, message, outgoing);
+  friendChatLines_[friendNumber].push_back(line);
+  bool const active = !groupChatActive_ && currentFriendNumber_ == friendNumber;
+  if (!outgoing && !active) {
+    friendUnreadCount_[friendNumber] = friendUnreadCount_.value(friendNumber, 0) + 1;
     RefreshFriendList_();
-    UpdateTabBadge_();
   }
+  if (active) {
+    chatView_->append(line);
+  }
+}
 
-  // 只在“真正选中不同好友”时提示一次，避免重复触发造成刷屏
-  if (fn == lastSelectedFriend_) {
+void MainWindow::AppendGroupMessage_(uint32_t conferenceNumber,
+                                     QString const &sender,
+                                     QString const &message, bool outgoing) {
+  QString const line = ChatLine(sender, message, outgoing);
+  groupChatLines_[conferenceNumber].push_back(line);
+  bool const active = groupChatActive_ && currentGroupNumber_ == conferenceNumber;
+  if (!outgoing && !active) {
+    groupUnreadCount_[conferenceNumber] =
+        groupUnreadCount_.value(conferenceNumber, 0) + 1;
+    RefreshGroupList_();
+  }
+  if (active) {
+    chatView_->append(line);
+  }
+}
+
+void MainWindow::RenderCurrentConversation_() {
+  if (!chatView_) {
     return;
   }
-  lastSelectedFriend_ = fn;
-
   chatView_->clear();
-  lastDisplayedDate_ = QDate();  // 重置日期记录
-  LoadRecentMessages_(fn);
+  if (groupChatActive_ && currentGroupNumber_ != kInvalidNumber) {
+    QStringList const peers = GetGroupPeerNames_(currentGroupNumber_);
+    AppendSystemMessage_(QStringLiteral("group: %1").arg(
+                             GetGroupDisplayName_(currentGroupNumber_)),
+                         QStringLiteral("#8b92a6"));
+    AppendSystemMessage_(
+        peers.isEmpty() ? QStringLiteral("no visible peers yet")
+                        : QStringLiteral("peers: %1").arg(peers.join(", ")),
+        QStringLiteral("#8b92a6"));
+    for (QString const &line : groupChatLines_.value(currentGroupNumber_)) {
+      chatView_->append(line);
+    }
+    return;
+  }
+
+  if (currentFriendNumber_ != kInvalidNumber) {
+    AppendSystemMessage_(QStringLiteral("friend: %1")
+                             .arg(GetFriendDisplayName_(currentFriendNumber_)),
+                         QStringLiteral("#8b92a6"));
+    for (QString const &line : friendChatLines_.value(currentFriendNumber_)) {
+      chatView_->append(line);
+    }
+    return;
+  }
+
+  AppendSystemMessage_(
+      QStringLiteral("Select a friend or group, or copy your Tox ID to share."),
+      QStringLiteral("#8b92a6"));
+}
+
+void MainWindow::SetupNotificationCenter_() {
+  noticeDock_ = new QDockWidget(QStringLiteral("notification center"), this);
+  noticeDock_->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea |
+                               Qt::BottomDockWidgetArea);
+  noticeTabs_ = new QTabWidget(noticeDock_);
+  noticeStatusView_ = new QTextBrowser(noticeTabs_);
+  noticeLogView_ = new QTextBrowser(noticeTabs_);
+  noticeStatusView_->setOpenExternalLinks(false);
+  noticeLogView_->setOpenExternalLinks(false);
+  noticeTabs_->addTab(noticeStatusView_, QStringLiteral("recent"));
+  noticeTabs_->addTab(noticeLogView_, QStringLiteral("events"));
+  noticeDock_->setWidget(noticeTabs_);
+  addDockWidget(Qt::RightDockWidgetArea, noticeDock_);
+  noticeDock_->hide();
+  noticeStatusView_->setPlainText(QStringLiteral("No events yet."));
+  connect(noticeDock_, &QDockWidget::visibilityChanged, this, [this](bool visible) {
+    if (visible) {
+      noticeUnread_ = 0;
+      UpdateNoticeBadge_();
+    }
+  });
+}
+
+void MainWindow::AppendEventLine_(QString const &category, QString const &text) {
+  QString const plain = QStringLiteral("[%1] %2: %3")
+                            .arg(TimeText(), category, text);
+  noticeRecentLines_.push_back(plain);
+  while (noticeRecentLines_.size() > 80) {
+    noticeRecentLines_.removeFirst();
+  }
+
+  QStringList recent;
+  qsizetype const start = std::max<qsizetype>(0, noticeRecentLines_.size() - 8);
+  for (qsizetype i = start; i < noticeRecentLines_.size(); ++i) {
+    recent.push_back(noticeRecentLines_.at(i));
+  }
+  if (noticeStatusView_) {
+    noticeStatusView_->setPlainText(recent.join(QStringLiteral("\n")));
+  }
+  if (noticeLogView_) {
+    noticeLogView_->append(QStringLiteral("<span style='color:#8b92a6;'>[%1]</span> "
+                                          "<b>%2</b> %3")
+                               .arg(TimeText(), category.toHtmlEscaped(),
+                                    text.toHtmlEscaped()));
+  }
+  if (noticeDock_ && !noticeDock_->isVisible()) {
+    ++noticeUnread_;
+    UpdateNoticeBadge_();
+  }
+  statusBar()->showMessage(QStringLiteral("%1: %2").arg(category, text), 5000);
+}
+
+void MainWindow::UpdateNoticeBadge_() {
+  if (!noticeBtn_) {
+    return;
+  }
+  noticeBtn_->setText(noticeUnread_ > 0
+                          ? QStringLiteral("notice (%1)").arg(noticeUnread_)
+                          : QStringLiteral("notice"));
+}
+
+QString MainWindow::ConnectionLabel_(TOX_CONNECTION connection) const {
+  switch (connection) {
+    case TOX_CONNECTION_TCP:
+      return QStringLiteral("online via TCP");
+    case TOX_CONNECTION_UDP:
+      return QStringLiteral("online via UDP");
+    case TOX_CONNECTION_NONE:
+    default:
+      return QStringLiteral("offline");
+  }
 }
