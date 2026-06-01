@@ -33,7 +33,12 @@ set_target_properties(toxcore_shared PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/lib"
 )
 
-add_executable(im ${PROJECT_SOURCE_DIR}/main.cpp)
+add_executable(im
+${PROJECT_SOURCE_DIR}/main.cpp
+${PROJECT_SOURCE_DIR}/include/widget/AddFriendDialog.h
+${PROJECT_SOURCE_DIR}/src/widget/AddFriendDialog.cpp
+${PROJECT_SOURCE_DIR}/src/core/ToxCoreWrapper.cpp
+)
 
 target_include_directories(im PRIVATE
 ${PROJECT_SOURCE_DIR}/include
