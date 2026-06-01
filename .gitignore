@@ -1,0 +1,57 @@
+# CMake build output
+build/
+out/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+_CPack_Packages/
+CPackConfig.cmake
+CPackSourceConfig.cmake
+Makefile
+
+# Generated compile database
+compile_commands.json
+
+# Compiler artifacts
+*.o
+*.obj
+*.lo
+*.la
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.out
+*.app
+*.dSYM/
+
+# Qt generated files
+moc_*.cpp
+moc_*.h
+qrc_*.cpp
+ui_*.h
+*.qmlc
+*.jsc
+
+# Tool caches
+.cache/
+.ccls-cache/
+.clangd/index/
+
+# Editor and OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+.claude
+CLAUDE.md
