@@ -1,5 +1,8 @@
-#include "widget/MainWindow.h"
-#include "widget/AddFriendDialog.h"
+#include "MainWindow.h"
+#include <algorithm>
+#include <array>
+#include <functional>
+#include <limits>
 #include <QApplication>
 #include <QClipboard>
 #include <QCoreApplication>
@@ -26,16 +29,13 @@
 #include <QTextBrowser>
 #include <QTextEdit>
 #include <QTimer>
-#include <QVBoxLayout>
 #include <QVariant>
+#include <QVBoxLayout>
 #include <QWidget>
-#include <algorithm>
-#include <array>
-#include <functional>
-#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
+#include "AddFriendDialog.h"
 
 class ChatInputEdit final : public QTextEdit {
   public:
@@ -90,8 +90,8 @@ QString TimeText() {
 }
 
 QString ChatLine(QString const &sender, QString const &message, bool outgoing) {
-  QString const nameColor = outgoing ? QStringLiteral("#4fc3f7")
-                                     : QStringLiteral("#81c784");
+  QString const nameColor =
+      outgoing ? QStringLiteral("#4fc3f7") : QStringLiteral("#81c784");
   return QStringLiteral(
              "<div style='margin:8px 0;'>"
              "<span style='font-weight:600;color:%1;'>%2</span> "
@@ -128,7 +128,7 @@ QJsonArray NodeArrayFromDocument(QJsonDocument const &doc) {
 
 QString FirstString(QJsonObject const &object,
                     std::initializer_list<QStringView> keys) {
-  for (QStringView key : keys) {
+  for (QStringView key: keys) {
     QJsonValue const value = object.value(key.toString());
     if (value.isString() && !value.toString().trimmed().isEmpty()) {
       return value.toString().trimmed();
@@ -156,19 +156,20 @@ uint16_t PortFromObject(QJsonObject const &object) {
 }
 
 std::vector<BootstrapNode> DefaultBootstrapNodes() {
-  return {{QStringLiteral("144.217.167.73"), 33445,
-           QStringLiteral(
-               "7E5668E0EE09E19F320AD47902419331FFEE147BB3606769CFBE921A2A2FD34C")},
-          {QStringLiteral("tox.abilinski.com"), 33445,
-           QStringLiteral(
-               "10C00EB250C3233E343E2AEBA07115A5C28920E9C8D29492F6D00B29049EDC7E")},
-          {QStringLiteral("198.199.98.108"), 33445,
-           QStringLiteral(
-               "BEF0CFB37AF874BD17B9A8F9FE64C75521DB95A37D33C5BDB00E9CF58659C04F")}};
+  return {
+      {QStringLiteral("144.217.167.73"), 33445,
+       QStringLiteral(
+           "7E5668E0EE09E19F320AD47902419331FFEE147BB3606769CFBE921A2A2FD34C")},
+      {QStringLiteral("tox.abilinski.com"), 33445,
+       QStringLiteral(
+           "10C00EB250C3233E343E2AEBA07115A5C28920E9C8D29492F6D00B29049EDC7E")},
+      {QStringLiteral("198.199.98.108"), 33445,
+       QStringLiteral("BEF0CFB37AF874BD17B9A8F9FE64C75521DB95A37D33C5BDB00E9CF5"
+                      "8659C04F")}};
 }
 
 std::vector<BootstrapNode> LoadBootstrapNodes(QStringList const &paths) {
-  for (QString const &path : paths) {
+  for (QString const &path: paths) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
       continue;
@@ -179,7 +180,7 @@ std::vector<BootstrapNode> LoadBootstrapNodes(QStringList const &paths) {
       continue;
     }
     std::vector<BootstrapNode> nodes;
-    for (QJsonValue const value : NodeArrayFromDocument(doc)) {
+    for (QJsonValue const value: NodeArrayFromDocument(doc)) {
       if (!value.isObject()) {
         continue;
       }
@@ -227,7 +228,8 @@ void MainWindow::BuildUi_() {
   accountNameLabel_ = new QLabel(profileName_, this);
   selfIdEdit_ = new QLineEdit(this);
   selfIdEdit_->setReadOnly(true);
-  selfIdEdit_->setPlaceholderText(QStringLiteral("Tox ID will appear after startup"));
+  selfIdEdit_->setPlaceholderText(
+      QStringLiteral("Tox ID will appear after startup"));
   networkStatusLabel_ = new QLabel(QStringLiteral("network: starting"), this);
 
   addFriendBtn_ = new QPushButton(QStringLiteral("add friend"), this);
@@ -335,18 +337,18 @@ void MainWindow::WireSignals_() {
 }
 
 void MainWindow::ApplyTheme_() {
-  QString const base = isDarkTheme_ ? QStringLiteral("#12151c")
-                                    : QStringLiteral("#f5f7fb");
-  QString const panel = isDarkTheme_ ? QStringLiteral("#1b202b")
-                                     : QStringLiteral("#ffffff");
-  QString const text = isDarkTheme_ ? QStringLiteral("#e8ecf3")
-                                    : QStringLiteral("#1f2937");
-  QString const muted = isDarkTheme_ ? QStringLiteral("#9aa4b5")
-                                     : QStringLiteral("#5b6472");
-  QString const border = isDarkTheme_ ? QStringLiteral("#303747")
-                                      : QStringLiteral("#d7dde8");
-  QString const button = isDarkTheme_ ? QStringLiteral("#263244")
-                                      : QStringLiteral("#e8eef8");
+  QString const base =
+      isDarkTheme_ ? QStringLiteral("#12151c") : QStringLiteral("#f5f7fb");
+  QString const panel =
+      isDarkTheme_ ? QStringLiteral("#1b202b") : QStringLiteral("#ffffff");
+  QString const text =
+      isDarkTheme_ ? QStringLiteral("#e8ecf3") : QStringLiteral("#1f2937");
+  QString const muted =
+      isDarkTheme_ ? QStringLiteral("#9aa4b5") : QStringLiteral("#5b6472");
+  QString const border =
+      isDarkTheme_ ? QStringLiteral("#303747") : QStringLiteral("#d7dde8");
+  QString const button =
+      isDarkTheme_ ? QStringLiteral("#263244") : QStringLiteral("#e8eef8");
 
   setStyleSheet(QStringLiteral(R"(
     QWidget { background:%1; color:%3; font-size:10pt; }
@@ -370,7 +372,8 @@ void MainWindow::ApplyTheme_() {
       QStringLiteral("font-size:18pt;font-weight:700;color:#4fc3f7;"));
   networkStatusLabel_->setStyleSheet(QStringLiteral("color:%1;").arg(muted));
   selfIdEdit_->setStyleSheet(
-      QStringLiteral("QLineEdit { color:%1; font-family:monospace; }").arg(muted));
+      QStringLiteral("QLineEdit { color:%1; font-family:monospace; }")
+          .arg(muted));
   themeToggleBtn_->setText(isDarkTheme_ ? QStringLiteral("light")
                                         : QStringLiteral("dark"));
 }
@@ -398,7 +401,8 @@ void MainWindow::StartTox_() {
                             .arg(publicKey.left(12)));
             box.setInformativeText(requestMessage);
             box.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
-            SetMsgBoxButtonText(box, QMessageBox::Yes, QStringLiteral("accept"));
+            SetMsgBoxButtonText(box, QMessageBox::Yes,
+                                QStringLiteral("accept"));
             SetMsgBoxButtonText(box, QMessageBox::No, QStringLiteral("reject"));
             if (box.exec() == QMessageBox::Yes) {
               try {
@@ -413,7 +417,8 @@ void MainWindow::StartTox_() {
                 RefreshFriendList_();
                 RenderCurrentConversation_();
               } catch (std::exception const &e) {
-                QMessageBox::warning(this, QStringLiteral("friend request failed"),
+                QMessageBox::warning(this,
+                                     QStringLiteral("friend request failed"),
                                      QString::fromUtf8(e.what()));
               }
             } else {
@@ -443,40 +448,38 @@ void MainWindow::StartTox_() {
                        QStringLiteral("message from %1").arg(sender));
     });
 
-    tox_->SetOnConferenceInvite(
-        [this](uint32_t friendNumber, TOX_CONFERENCE_TYPE,
-               std::vector<uint8_t> const &cookie) {
-          QString const friendName = GetFriendDisplayName_(friendNumber);
-          QMetaObject::invokeMethod(
-              this,
-              [this, friendNumber, friendName, cookie]() {
-                QMessageBox box(this);
-                box.setIcon(QMessageBox::Question);
-                box.setWindowTitle(QStringLiteral("group invitation"));
-                box.setText(QStringLiteral("Join group invited by %1?")
-                                .arg(friendName));
-                box.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
-                SetMsgBoxButtonText(box, QMessageBox::Yes,
-                                    QStringLiteral("join"));
-                SetMsgBoxButtonText(box, QMessageBox::No,
-                                    QStringLiteral("reject"));
-                if (box.exec() == QMessageBox::Yes) {
-                  if (tox_->JoinConference(friendNumber, cookie)) {
-                    AppendEventLine_(QStringLiteral("group"),
-                                     QStringLiteral("accepted invitation from %1")
-                                         .arg(friendName));
-                  } else {
-                    QMessageBox::warning(this, QStringLiteral("group invitation"),
-                                         QStringLiteral("Failed to join group."));
-                  }
-                } else {
-                  AppendEventLine_(QStringLiteral("group"),
-                                   QStringLiteral("rejected invitation from %1")
-                                       .arg(friendName));
-                }
-              },
-              Qt::QueuedConnection);
-        });
+    tox_->SetOnConferenceInvite([this](uint32_t friendNumber,
+                                       TOX_CONFERENCE_TYPE,
+                                       std::vector<uint8_t> const &cookie) {
+      QString const friendName = GetFriendDisplayName_(friendNumber);
+      QMetaObject::invokeMethod(
+          this,
+          [this, friendNumber, friendName, cookie]() {
+            QMessageBox box(this);
+            box.setIcon(QMessageBox::Question);
+            box.setWindowTitle(QStringLiteral("group invitation"));
+            box.setText(
+                QStringLiteral("Join group invited by %1?").arg(friendName));
+            box.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
+            SetMsgBoxButtonText(box, QMessageBox::Yes, QStringLiteral("join"));
+            SetMsgBoxButtonText(box, QMessageBox::No, QStringLiteral("reject"));
+            if (box.exec() == QMessageBox::Yes) {
+              if (tox_->JoinConference(friendNumber, cookie)) {
+                AppendEventLine_(QStringLiteral("group"),
+                                 QStringLiteral("accepted invitation from %1")
+                                     .arg(friendName));
+              } else {
+                QMessageBox::warning(this, QStringLiteral("group invitation"),
+                                     QStringLiteral("Failed to join group."));
+              }
+            } else {
+              AppendEventLine_(QStringLiteral("group"),
+                               QStringLiteral("rejected invitation from %1")
+                                   .arg(friendName));
+            }
+          },
+          Qt::QueuedConnection);
+    });
 
     tox_->SetOnConferenceConnected([this](uint32_t conferenceNumber) {
       currentGroupNumber_ = conferenceNumber;
@@ -488,39 +491,39 @@ void MainWindow::StartTox_() {
       RenderCurrentConversation_();
     });
 
-    tox_->SetOnConferenceMessage(
-        [this](uint32_t conferenceNumber, uint32_t peerNumber, TOX_MESSAGE_TYPE,
-               std::string const &message) {
-          QString sender = FromUtf8(tox_->GetConferencePeerName(conferenceNumber,
-                                                                peerNumber));
-          if (sender.isEmpty()) {
-            sender = QStringLiteral("peer %1").arg(peerNumber);
-          }
-          AppendGroupMessage_(conferenceNumber, sender, FromUtf8(message), false);
+    tox_->SetOnConferenceMessage([this](uint32_t conferenceNumber,
+                                        uint32_t peerNumber, TOX_MESSAGE_TYPE,
+                                        std::string const &message) {
+      QString sender =
+          FromUtf8(tox_->GetConferencePeerName(conferenceNumber, peerNumber));
+      if (sender.isEmpty()) {
+        sender = QStringLiteral("peer %1").arg(peerNumber);
+      }
+      AppendGroupMessage_(conferenceNumber, sender, FromUtf8(message), false);
+      AppendEventLine_(
+          QStringLiteral("group"),
+          QStringLiteral("message in %1 from %2")
+              .arg(GetGroupDisplayName_(conferenceNumber), sender));
+    });
+
+    tox_->SetOnConferenceTitle(
+        [this](uint32_t conferenceNumber, uint32_t, std::string const &title) {
           AppendEventLine_(QStringLiteral("group"),
-                           QStringLiteral("message in %1 from %2")
-                               .arg(GetGroupDisplayName_(conferenceNumber),
-                                    sender));
+                           QStringLiteral("%1 title is now %2")
+                               .arg(QStringLiteral("group"), FromUtf8(title)));
+          RefreshGroupList_();
+          if (groupChatActive_ && currentGroupNumber_ == conferenceNumber) {
+            RenderCurrentConversation_();
+          }
         });
 
-    tox_->SetOnConferenceTitle([this](uint32_t conferenceNumber, uint32_t,
-                                      std::string const &title) {
-      AppendEventLine_(QStringLiteral("group"),
-                       QStringLiteral("%1 title is now %2")
-                           .arg(QStringLiteral("group"), FromUtf8(title)));
-      RefreshGroupList_();
-      if (groupChatActive_ && currentGroupNumber_ == conferenceNumber) {
-        RenderCurrentConversation_();
-      }
-    });
-
-    tox_->SetOnConferencePeerName([this](uint32_t conferenceNumber, uint32_t,
-                                         std::string const &) {
-      RefreshGroupList_();
-      if (groupChatActive_ && currentGroupNumber_ == conferenceNumber) {
-        RenderCurrentConversation_();
-      }
-    });
+    tox_->SetOnConferencePeerName(
+        [this](uint32_t conferenceNumber, uint32_t, std::string const &) {
+          RefreshGroupList_();
+          if (groupChatActive_ && currentGroupNumber_ == conferenceNumber) {
+            RenderCurrentConversation_();
+          }
+        });
 
     tox_->SetOnConferencePeerListChanged([this](uint32_t conferenceNumber) {
       AppendEventLine_(QStringLiteral("group"),
@@ -559,7 +562,7 @@ void MainWindow::BootstrapFromConfig_() {
       QDir::current().filePath(QStringLiteral("bootstrap_nodes.json"))};
   std::vector<BootstrapNode> const nodes = LoadBootstrapNodes(paths);
   int connected = 0;
-  for (BootstrapNode const &node : nodes) {
+  for (BootstrapNode const &node: nodes) {
     try {
       tox_->Bootstrap(node.address.toStdString(), node.port,
                       node.publicKeyHex.toStdString());
@@ -591,7 +594,8 @@ void MainWindow::ScheduleIterate_() {
     return;
   }
   uint32_t const interval = tox_->IterationIntervalMs();
-  iterateTimer_->start(static_cast<int>(std::clamp<uint32_t>(interval, 10, 1000)));
+  iterateTimer_->start(
+      static_cast<int>(std::clamp<uint32_t>(interval, 10, 1000)));
 }
 
 void MainWindow::OnIterateTick_() {
@@ -605,14 +609,14 @@ void MainWindow::OnIterateTick_() {
       selfConnection_ = connection;
       networkStatusLabel_->setText(
           QStringLiteral("network: %1").arg(ConnectionLabel_(connection)));
-      AppendEventLine_(QStringLiteral("network"),
-                       QStringLiteral("network is %1")
-                           .arg(ConnectionLabel_(connection)));
+      AppendEventLine_(
+          QStringLiteral("network"),
+          QStringLiteral("network is %1").arg(ConnectionLabel_(connection)));
     }
   } catch (std::exception const &e) {
-    AppendEventLine_(QStringLiteral("status"),
-                     QStringLiteral("iterate failed: %1")
-                         .arg(QString::fromUtf8(e.what())));
+    AppendEventLine_(
+        QStringLiteral("status"),
+        QStringLiteral("iterate failed: %1").arg(QString::fromUtf8(e.what())));
   }
   ScheduleIterate_();
 }
@@ -632,16 +636,15 @@ void MainWindow::RefreshFriendList_() {
   bool selectedStillExists = false;
 
   try {
-    for (uint32_t const friendNumber : tox_->GetFriendList()) {
+    for (uint32_t const friendNumber: tox_->GetFriendList()) {
       TOX_CONNECTION connection = TOX_CONNECTION_NONE;
       try {
         connection = tox_->GetFriendConnectionStatus(friendNumber);
       } catch (...) {}
       friendConnectionCache_[friendNumber] = connection;
 
-      QString text = QStringLiteral("%1 — %2")
-                         .arg(GetFriendDisplayName_(friendNumber),
-                              ConnectionLabel_(connection));
+      QString text = QStringLiteral("%1 — %2").arg(
+          GetFriendDisplayName_(friendNumber), ConnectionLabel_(connection));
       int const unread = friendUnreadCount_.value(friendNumber, 0);
       if (unread > 0) {
         text += QStringLiteral(" (%1)").arg(unread);
@@ -722,7 +725,7 @@ void MainWindow::RefreshGroupList_() {
   groupList_->clear();
   bool selectedStillExists = false;
 
-  for (uint32_t const conferenceNumber : tox_->GetConferenceList()) {
+  for (uint32_t const conferenceNumber: tox_->GetConferenceList()) {
     QString text = QStringLiteral("%1 — %2 peers")
                        .arg(GetGroupDisplayName_(conferenceNumber))
                        .arg(tox_->GetConferencePeerCount(conferenceNumber));
@@ -733,7 +736,8 @@ void MainWindow::RefreshGroupList_() {
 
     auto *item = new QListWidgetItem(text, groupList_);
     item->setData(Qt::UserRole, conferenceNumber);
-    item->setToolTip(GetGroupPeerNames_(conferenceNumber).join(QStringLiteral("\n")));
+    item->setToolTip(
+        GetGroupPeerNames_(conferenceNumber).join(QStringLiteral("\n")));
     if (conferenceNumber == selected) {
       item->setSelected(true);
       groupList_->setCurrentItem(item);
@@ -762,7 +766,8 @@ QString MainWindow::GetGroupDisplayName_(uint32_t conferenceNumber) const {
   if (!tox_ || conferenceNumber == kInvalidNumber) {
     return QStringLiteral("group");
   }
-  QString title = FromUtf8(tox_->GetConferenceTitle(conferenceNumber)).trimmed();
+  QString title =
+      FromUtf8(tox_->GetConferenceTitle(conferenceNumber)).trimmed();
   if (!title.isEmpty()) {
     return title;
   }
@@ -776,8 +781,8 @@ QStringList MainWindow::GetGroupPeerNames_(uint32_t conferenceNumber) const {
   }
   uint32_t const count = tox_->GetConferencePeerCount(conferenceNumber);
   for (uint32_t peer = 0; peer < count; ++peer) {
-    QString name = FromUtf8(tox_->GetConferencePeerName(conferenceNumber, peer))
-                       .trimmed();
+    QString name =
+        FromUtf8(tox_->GetConferencePeerName(conferenceNumber, peer)).trimmed();
     if (name.isEmpty()) {
       name = QStringLiteral("peer %1").arg(peer);
     }
@@ -943,9 +948,9 @@ void MainWindow::OnCreateGroupClicked_() {
   currentGroupNumber_ = conferenceNumber;
   currentFriendNumber_ = kInvalidNumber;
   groupChatActive_ = true;
-  AppendEventLine_(QStringLiteral("group"),
-                   QStringLiteral("created %1")
-                       .arg(GetGroupDisplayName_(conferenceNumber)));
+  AppendEventLine_(
+      QStringLiteral("group"),
+      QStringLiteral("created %1").arg(GetGroupDisplayName_(conferenceNumber)));
   RefreshGroupList_();
   RenderCurrentConversation_();
 }
@@ -970,7 +975,7 @@ void MainWindow::OnInviteToGroupClicked_() {
 
   QStringList choices;
   choices.reserve(static_cast<qsizetype>(friends.size()));
-  for (uint32_t const friendNumber : friends) {
+  for (uint32_t const friendNumber: friends) {
     QString publicKey = FriendPubKeyHex_(friendNumber);
     if (publicKey.isEmpty()) {
       publicKey = QString::number(friendNumber);
@@ -983,9 +988,9 @@ void MainWindow::OnInviteToGroupClicked_() {
   }
 
   bool ok = false;
-  QString const selected = QInputDialog::getItem(
-      this, QStringLiteral("invite friend"), QStringLiteral("friend"), choices, 0,
-      false, &ok);
+  QString const selected =
+      QInputDialog::getItem(this, QStringLiteral("invite friend"),
+                            QStringLiteral("friend"), choices, 0, false, &ok);
   if (!ok) {
     return;
   }
@@ -995,8 +1000,9 @@ void MainWindow::OnInviteToGroupClicked_() {
   }
   uint32_t const friendNumber = friends[static_cast<size_t>(index)];
   if (!tox_->InviteFriendToConference(friendNumber, conferenceNumber)) {
-    QMessageBox::warning(this, QStringLiteral("invite friend failed"),
-                         QStringLiteral("Tox did not send the group invitation."));
+    QMessageBox::warning(
+        this, QStringLiteral("invite friend failed"),
+        QStringLiteral("Tox did not send the group invitation."));
     return;
   }
   AppendEventLine_(QStringLiteral("group"),
@@ -1051,24 +1057,29 @@ void MainWindow::OnLeaveGroupClicked_() {
   groupChatLines_.remove(conferenceNumber);
   currentGroupNumber_ = kInvalidNumber;
   groupChatActive_ = false;
-  AppendEventLine_(QStringLiteral("group"), QStringLiteral("left %1").arg(name));
+  AppendEventLine_(QStringLiteral("group"),
+                   QStringLiteral("left %1").arg(name));
   RefreshGroupList_();
   RenderCurrentConversation_();
 }
 
-void MainWindow::AppendSystemMessage_(QString const &text, QString const &color) {
-  chatView_->append(QStringLiteral(
-                        "<div style='text-align:center;color:%1;margin:10px;'>%2</div>")
-                        .arg(color, text.toHtmlEscaped()));
+void MainWindow::AppendSystemMessage_(QString const &text,
+                                      QString const &color) {
+  chatView_->append(
+      QStringLiteral(
+          "<div style='text-align:center;color:%1;margin:10px;'>%2</div>")
+          .arg(color, text.toHtmlEscaped()));
 }
 
-void MainWindow::AppendFriendMessage_(uint32_t friendNumber, QString const &sender,
+void MainWindow::AppendFriendMessage_(uint32_t friendNumber,
+                                      QString const &sender,
                                       QString const &message, bool outgoing) {
   QString const line = ChatLine(sender, message, outgoing);
   friendChatLines_[friendNumber].push_back(line);
   bool const active = !groupChatActive_ && currentFriendNumber_ == friendNumber;
   if (!outgoing && !active) {
-    friendUnreadCount_[friendNumber] = friendUnreadCount_.value(friendNumber, 0) + 1;
+    friendUnreadCount_[friendNumber] =
+        friendUnreadCount_.value(friendNumber, 0) + 1;
     RefreshFriendList_();
   }
   if (active) {
@@ -1081,7 +1092,8 @@ void MainWindow::AppendGroupMessage_(uint32_t conferenceNumber,
                                      QString const &message, bool outgoing) {
   QString const line = ChatLine(sender, message, outgoing);
   groupChatLines_[conferenceNumber].push_back(line);
-  bool const active = groupChatActive_ && currentGroupNumber_ == conferenceNumber;
+  bool const active =
+      groupChatActive_ && currentGroupNumber_ == conferenceNumber;
   if (!outgoing && !active) {
     groupUnreadCount_[conferenceNumber] =
         groupUnreadCount_.value(conferenceNumber, 0) + 1;
@@ -1099,14 +1111,14 @@ void MainWindow::RenderCurrentConversation_() {
   chatView_->clear();
   if (groupChatActive_ && currentGroupNumber_ != kInvalidNumber) {
     QStringList const peers = GetGroupPeerNames_(currentGroupNumber_);
-    AppendSystemMessage_(QStringLiteral("group: %1").arg(
-                             GetGroupDisplayName_(currentGroupNumber_)),
+    AppendSystemMessage_(QStringLiteral("group: %1")
+                             .arg(GetGroupDisplayName_(currentGroupNumber_)),
                          QStringLiteral("#8b92a6"));
     AppendSystemMessage_(
         peers.isEmpty() ? QStringLiteral("no visible peers yet")
                         : QStringLiteral("peers: %1").arg(peers.join(", ")),
         QStringLiteral("#8b92a6"));
-    for (QString const &line : groupChatLines_.value(currentGroupNumber_)) {
+    for (QString const &line: groupChatLines_.value(currentGroupNumber_)) {
       chatView_->append(line);
     }
     return;
@@ -1116,7 +1128,7 @@ void MainWindow::RenderCurrentConversation_() {
     AppendSystemMessage_(QStringLiteral("friend: %1")
                              .arg(GetFriendDisplayName_(currentFriendNumber_)),
                          QStringLiteral("#8b92a6"));
-    for (QString const &line : friendChatLines_.value(currentFriendNumber_)) {
+    for (QString const &line: friendChatLines_.value(currentFriendNumber_)) {
       chatView_->append(line);
     }
     return;
@@ -1129,7 +1141,8 @@ void MainWindow::RenderCurrentConversation_() {
 
 void MainWindow::SetupNotificationCenter_() {
   noticeDock_ = new QDockWidget(QStringLiteral("notification center"), this);
-  noticeDock_->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea |
+  noticeDock_->setAllowedAreas(Qt::LeftDockWidgetArea |
+                               Qt::RightDockWidgetArea |
                                Qt::BottomDockWidgetArea);
   noticeTabs_ = new QTabWidget(noticeDock_);
   noticeStatusView_ = new QTextBrowser(noticeTabs_);
@@ -1142,17 +1155,19 @@ void MainWindow::SetupNotificationCenter_() {
   addDockWidget(Qt::RightDockWidgetArea, noticeDock_);
   noticeDock_->hide();
   noticeStatusView_->setPlainText(QStringLiteral("No events yet."));
-  connect(noticeDock_, &QDockWidget::visibilityChanged, this, [this](bool visible) {
-    if (visible) {
-      noticeUnread_ = 0;
-      UpdateNoticeBadge_();
-    }
-  });
+  connect(noticeDock_, &QDockWidget::visibilityChanged, this,
+          [this](bool visible) {
+            if (visible) {
+              noticeUnread_ = 0;
+              UpdateNoticeBadge_();
+            }
+          });
 }
 
-void MainWindow::AppendEventLine_(QString const &category, QString const &text) {
-  QString const plain = QStringLiteral("[%1] %2: %3")
-                            .arg(TimeText(), category, text);
+void MainWindow::AppendEventLine_(QString const &category,
+                                  QString const &text) {
+  QString const plain =
+      QStringLiteral("[%1] %2: %3").arg(TimeText(), category, text);
   noticeRecentLines_.push_back(plain);
   while (noticeRecentLines_.size() > 80) {
     noticeRecentLines_.removeFirst();
@@ -1167,10 +1182,10 @@ void MainWindow::AppendEventLine_(QString const &category, QString const &text) 
     noticeStatusView_->setPlainText(recent.join(QStringLiteral("\n")));
   }
   if (noticeLogView_) {
-    noticeLogView_->append(QStringLiteral("<span style='color:#8b92a6;'>[%1]</span> "
-                                          "<b>%2</b> %3")
-                               .arg(TimeText(), category.toHtmlEscaped(),
-                                    text.toHtmlEscaped()));
+    noticeLogView_->append(
+        QStringLiteral("<span style='color:#8b92a6;'>[%1]</span> "
+                       "<b>%2</b> %3")
+            .arg(TimeText(), category.toHtmlEscaped(), text.toHtmlEscaped()));
   }
   if (noticeDock_ && !noticeDock_->isVisible()) {
     ++noticeUnread_;
@@ -1190,12 +1205,9 @@ void MainWindow::UpdateNoticeBadge_() {
 
 QString MainWindow::ConnectionLabel_(TOX_CONNECTION connection) const {
   switch (connection) {
-    case TOX_CONNECTION_TCP:
-      return QStringLiteral("online via TCP");
-    case TOX_CONNECTION_UDP:
-      return QStringLiteral("online via UDP");
-    case TOX_CONNECTION_NONE:
-    default:
-      return QStringLiteral("offline");
+  case TOX_CONNECTION_TCP:  return QStringLiteral("online via TCP");
+  case TOX_CONNECTION_UDP:  return QStringLiteral("online via UDP");
+  case TOX_CONNECTION_NONE:
+  default:                  return QStringLiteral("offline");
   }
 }

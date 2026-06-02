@@ -1,13 +1,12 @@
 cmake_minimum_required(VERSION 4.3.3)
 
 set(CMAKE_CXX_STANDARD 26)
-set(CMAKE_AUTOMOC ON)
+qt_standard_project_setup(REQUIRES 6.10)
 set(CMAKE_AUTORCC ON)
-set(CMAKE_AUTOUIC ON)
 
 project(im)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Widgets REQUIRED)
+find_package(Qt6 REQUIRED COMPONENTS Core Widgets Quick REQUIRED)
 
 add_subdirectory(third_party/c-toxcore)
 
@@ -33,11 +32,11 @@ set_target_properties(toxcore_shared PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/lib"
 )
 
-add_executable(im
+qt_add_executable(im
 ${PROJECT_SOURCE_DIR}/main.cpp
-${PROJECT_SOURCE_DIR}/include/widget/AddFriendDialog.h
+${PROJECT_SOURCE_DIR}/src/widget/AddFriendDialog.h
 ${PROJECT_SOURCE_DIR}/src/widget/AddFriendDialog.cpp
-${PROJECT_SOURCE_DIR}/include/widget/MainWindow.h
+${PROJECT_SOURCE_DIR}/src/widget/MainWindow.h
 ${PROJECT_SOURCE_DIR}/src/widget/MainWindow.cpp
 ${PROJECT_SOURCE_DIR}/src/core/ToxCoreWrapper.cpp
 )
@@ -48,6 +47,6 @@ ${PROJECT_SOURCE_DIR}/third_party/c-toxcore
 )
 
 target_link_libraries(im PRIVATE
-Qt6::Core Qt6::Widgets
+Qt6::Core Qt6::Widgets Qt6::Quick
 toxcore_shared
 )

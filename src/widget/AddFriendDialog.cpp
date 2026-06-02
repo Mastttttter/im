@@ -1,4 +1,4 @@
-#include "widget/AddFriendDialog.h"
+#include "AddFriendDialog.h"
 #include <qobject.h>
 #include <QDialogButtonBox>
 #include <QFormLayout>

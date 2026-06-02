@@ -1,4 +1,4 @@
-#include "core/ToxCoreWrapper.h"
+#include "ToxCoreWrapper.h"
 #include <algorithm>
 #include <array>
 #include <cstring>
