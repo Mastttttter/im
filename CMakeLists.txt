@@ -9,6 +9,7 @@ project(im)
 find_package(Qt6 REQUIRED COMPONENTS Core Widgets Quick REQUIRED)
 
 add_subdirectory(third_party/c-toxcore)
+add_subdirectory(src/qml)
 
 set(BUILD_TOXAV ON CACHE BOOL "Build the tox AV library" FORCE)
 set(MUST_BUILD_TOXAV ON CACHE BOOL "Fail the build if toxav cannot be built" FORCE)
