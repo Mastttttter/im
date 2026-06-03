@@ -244,22 +244,37 @@ void AppController::toggleTheme() {
                        : QStringLiteral("已切换到浅色主题。"));
 }
 
-void AppController::setStatusMessage(QString const &message) {
-  QString const text = message.trimmed().isEmpty()
-                           ? QStringLiteral("session-only profile")
-                           : message.trimmed();
-  if (statusMessage_ == text) {
-    return;
+bool AppController::setStatusMessage(QString const &message) {
+  QString const text = message.trimmed();
+  if (text.toUtf8().size() > 1007) {
+    QString const error = QStringLiteral("个签过长，最多 1007 字节。");
+    setProfileMessage(error);
+    addNotice(QStringLiteral("profile"), error, QStringLiteral("warning"));
+    return false;
   }
-  statusMessage_ = text;
-  emit statusMessageChanged();
-  if (tox_) {
-    try {
-      tox_->SetSelfStatusMessage(statusMessage_.toStdString());
+
+  try {
+    if (tox_) {
+      tox_->SetSelfStatusMessage(text.toStdString());
       persistSavedata();
-    } catch (...) {}
+    }
+  } catch (std::exception const &e) {
+    QString const error = QStringLiteral("设置个签失败：%1")
+                              .arg(QString::fromUtf8(e.what()));
+    setProfileMessage(error);
+    addNotice(QStringLiteral("profile"), error, QStringLiteral("warning"));
+    return false;
   }
-  addNotice(QStringLiteral("profile"), QStringLiteral("个签已更新。"));
+
+  if (statusMessage_ != text) {
+    statusMessage_ = text;
+    emit statusMessageChanged();
+  }
+  QString const ok = text.isEmpty() ? QStringLiteral("个签已清空。")
+                                    : QStringLiteral("个签已更新。");
+  setProfileMessage(ok);
+  addNotice(QStringLiteral("profile"), ok);
+  return true;
 }
 
 void AppController::markNoticesRead() {
@@ -649,13 +664,17 @@ bool AppController::startTox() {
   emit networkStatusChanged();
 
   try {
+    statusMessage_.clear();
+    emit statusMessageChanged();
     QByteArray const savedata = storageService_.loadToxSavedata(accountName_);
+    bool restored = false;
     if (!savedata.isEmpty()) {
       try {
         std::vector<uint8_t> data(static_cast<size_t>(savedata.size()));
         std::memcpy(data.data(), savedata.constData(),
                     static_cast<size_t>(savedata.size()));
         tox_ = std::make_unique<ToxCore::ToxCoreWrapper>(data);
+        restored = true;
         addNotice(QStringLiteral("tox"), QStringLiteral("已从数据库恢复 Tox 身份。"));
       } catch (std::exception const &e) {
         addNotice(QStringLiteral("tox"),
@@ -670,7 +689,12 @@ bool AppController::startTox() {
     }
 
     tox_->SetSelfName(accountName_.toStdString());
-    tox_->SetSelfStatusMessage(statusMessage_.toStdString());
+    if (restored) {
+      statusMessage_ = QString::fromStdString(tox_->GetSelfStatusMessage());
+      emit statusMessageChanged();
+    } else {
+      tox_->SetSelfStatusMessage({});
+    }
     selfToxId_ = QString::fromStdString(tox_->GetSelfAddressHex());
     emit selfToxIdChanged();
 

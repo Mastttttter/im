@@ -82,32 +82,26 @@ Rectangle {
         RowLayout {
             Layout.fillWidth: true
             spacing: 8
-            TextField {
-                id: messageLink
-                placeholderText: "点击设置个签"
-                text: controller.statusMessage === "" ? qsTr("click to set message") : controller.statusMessage
-                color: mouseArea.containsMouse ? "#1565c0" : "#1976d2"
-                font.underline: mouseArea.containsMouse
+            Button {
+                id: statusButton
+                text: controller.statusMessage.length > 0 ? controller.statusMessage : "点击设置个签"
+                flat: true
+                leftPadding: 0
+                rightPadding: 8
                 Layout.preferredWidth: 190
-                MouseArea {
-                    id: mouseArea
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-
-                    onClicked: {
-                        setStatusMessageDialog.open();
-                    }
+                Layout.preferredHeight: 32
+                ToolTip.visible: hovered && controller.statusMessage.length > 0
+                ToolTip.text: controller.statusMessage
+                contentItem: Label {
+                    text: statusButton.text
+                    color: statusButton.hovered ? theme.accent : theme.muted
+                    elide: Text.ElideRight
+                    verticalAlignment: Text.AlignVCenter
+                    font.underline: statusButton.hovered
                 }
+                background: Rectangle { color: "transparent" }
+                onClicked: setStatusMessageDialog.open()
             }
-            // TextField {
-            //     text: controller.statusMessage
-            //     placeholderText: "点击设置个签"
-            //     color: theme.muted
-            //     background: Rectangle { color: "transparent" }
-            //     Layout.preferredWidth: 190
-            //     onEditingFinished: controller.setStatusMessage(text)
-            // }
             Button {
                 text: "添加好友"
                 onClicked: root.addFriendRequested()

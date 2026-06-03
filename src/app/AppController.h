@@ -70,7 +70,7 @@ class AppController final : public QObject {
   Q_INVOKABLE void exitApplication();
   Q_INVOKABLE void copySelfId();
   Q_INVOKABLE void toggleTheme();
-  Q_INVOKABLE void setStatusMessage(QString const &message);
+  Q_INVOKABLE bool setStatusMessage(QString const &message);
   Q_INVOKABLE void markNoticesRead();
   Q_INVOKABLE void selectFriend(QString const &identifier);
   Q_INVOKABLE void selectGroup(QString const &identifier);
@@ -159,7 +159,7 @@ class AppController final : public QObject {
   QString accountName_;
   QString selfToxId_{QStringLiteral("Tox ID will appear after startup")};
   QString networkStatus_{QStringLiteral("network: offline")};
-  QString statusMessage_{QStringLiteral("session-only profile")};
+  QString statusMessage_;
   QString profileMessage_;
   bool darkTheme_{true};
   int noticeUnread_{0};
