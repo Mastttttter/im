@@ -210,7 +210,7 @@ void AppController::loginOrRegister(QString const &account,
   selectAssistant();
 }
 
-void AppController::changePassword(QString const &account,
+bool AppController::changePassword(QString const &account,
                                    QString const &oldPassword,
                                    QString const &newPassword,
                                    QString const &confirmPassword) {
@@ -222,6 +222,7 @@ void AppController::changePassword(QString const &account,
   if (result.success) {
     emit knownAccountsChanged();
   }
+  return result.success;
 }
 
 void AppController::exitApplication() { QCoreApplication::quit(); }

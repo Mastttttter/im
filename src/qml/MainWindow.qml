@@ -27,6 +27,7 @@ Item {
 
         TopBar {
             Layout.fillWidth: true
+            Layout.preferredHeight: parent.height*0.15
             controller: root.controller
             theme: root.theme
             onAddFriendRequested: root.addFriendRequested()
@@ -36,7 +37,7 @@ Item {
 
         SplitView {
             Layout.fillWidth: true
-            Layout.fillHeight: true
+            Layout.preferredHeight: parent.height*0.85
             orientation: Qt.Horizontal
 
             ContactPane {

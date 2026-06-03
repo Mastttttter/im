@@ -63,7 +63,7 @@ class AppController final : public QObject {
   Q_INVOKABLE void loginOrRegister(QString const &account, QString const &password,
                                    QString const &confirmPassword,
                                    bool registerNew);
-  Q_INVOKABLE void changePassword(QString const &account,
+  Q_INVOKABLE bool changePassword(QString const &account,
                                   QString const &oldPassword,
                                   QString const &newPassword,
                                   QString const &confirmPassword);
