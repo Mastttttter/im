@@ -24,6 +24,7 @@ class AppController final : public QObject {
   Q_PROPERTY(bool darkTheme READ darkTheme NOTIFY darkThemeChanged)
   Q_PROPERTY(int noticeUnread READ noticeUnread NOTIFY noticeUnreadChanged)
   Q_PROPERTY(QStringList knownAccounts READ knownAccounts NOTIFY knownAccountsChanged)
+  Q_PROPERTY(QString profileMessage READ profileMessage NOTIFY profileMessageChanged)
   Q_PROPERTY(QString selectedConversationIdentifier READ selectedConversationIdentifier NOTIFY selectedConversationChanged)
   Q_PROPERTY(QString selectedConversationKind READ selectedConversationKind NOTIFY selectedConversationChanged)
   Q_PROPERTY(QString selectedConversationTitle READ selectedConversationTitle NOTIFY selectedConversationChanged)
@@ -44,6 +45,7 @@ class AppController final : public QObject {
   bool darkTheme() const;
   int noticeUnread() const;
   QStringList knownAccounts() const;
+  QString profileMessage() const;
   QString selectedConversationIdentifier() const;
   QString selectedConversationKind() const;
   QString selectedConversationTitle() const;
@@ -94,6 +96,7 @@ class AppController final : public QObject {
   void darkThemeChanged();
   void noticeUnreadChanged();
   void knownAccountsChanged();
+  void profileMessageChanged();
   void selectedConversationChanged();
   void callStateChanged();
   void callShellRequested();
@@ -105,7 +108,7 @@ class AppController final : public QObject {
   private:
   enum class ConversationKind { None, Friend, Group, Assistant };
 
-  void startTox();
+  bool startTox();
   void registerToxCallbacks();
   void bootstrapFromConfig();
   void scheduleIterate();
@@ -114,6 +117,7 @@ class AppController final : public QObject {
   void persistSavedata();
   void addNotice(QString const &category, QString const &text,
                  QString const &severity = QStringLiteral("info"));
+  void setProfileMessage(QString const &message);
   void selectConversation(ConversationKind kind, QString const &identifier,
                           QString const &title);
   void loadSelectedConversation();
@@ -156,6 +160,7 @@ class AppController final : public QObject {
   QString selfToxId_{QStringLiteral("Tox ID will appear after startup")};
   QString networkStatus_{QStringLiteral("network: offline")};
   QString statusMessage_{QStringLiteral("session-only profile")};
+  QString profileMessage_;
   bool darkTheme_{true};
   int noticeUnread_{0};
 

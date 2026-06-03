@@ -160,6 +160,7 @@ int AppController::noticeUnread() const { return noticeUnread_; }
 QStringList AppController::knownAccounts() const {
   return profileService_.knownAccounts();
 }
+QString AppController::profileMessage() const { return profileMessage_; }
 QString AppController::selectedConversationIdentifier() const {
   return selectedIdentifier_;
 }
@@ -187,6 +188,7 @@ void AppController::loginOrRegister(QString const &account,
                                     bool registerNew) {
   ProfileResult const result = profileService_.loginOrRegister(
       account, password, confirmPassword, registerNew);
+  setProfileMessage(result.message);
   addNotice(QStringLiteral("profile"), result.message,
             result.success ? QStringLiteral("info") : QStringLiteral("warning"));
   if (!result.success) {
@@ -197,12 +199,14 @@ void AppController::loginOrRegister(QString const &account,
   emit accountNameChanged();
   emit knownAccountsChanged();
 
+  if (!startTox()) {
+    return;
+  }
+
   if (!loggedIn_) {
     loggedIn_ = true;
     emit loggedInChanged();
   }
-
-  startTox();
   selectAssistant();
 }
 
@@ -212,6 +216,7 @@ void AppController::changePassword(QString const &account,
                                    QString const &confirmPassword) {
   ProfileResult const result = profileService_.changePassword(
       account, oldPassword, newPassword, confirmPassword);
+  setProfileMessage(result.message);
   addNotice(QStringLiteral("profile"), result.message,
             result.success ? QStringLiteral("info") : QStringLiteral("warning"));
   if (result.success) {
@@ -250,6 +255,7 @@ void AppController::setStatusMessage(QString const &message) {
   if (tox_) {
     try {
       tox_->SetSelfStatusMessage(statusMessage_.toStdString());
+      persistSavedata();
     } catch (...) {}
   }
   addNotice(QStringLiteral("profile"), QStringLiteral("个签已更新。"));
@@ -633,7 +639,7 @@ void AppController::onRefreshTick() {
   refreshGroupList();
 }
 
-void AppController::startTox() {
+bool AppController::startTox() {
   iterateTimer_.stop();
   refreshTimer_.stop();
   tox_.reset();
@@ -644,11 +650,22 @@ void AppController::startTox() {
   try {
     QByteArray const savedata = storageService_.loadToxSavedata(accountName_);
     if (!savedata.isEmpty()) {
-      std::vector<uint8_t> data(static_cast<size_t>(savedata.size()));
-      std::memcpy(data.data(), savedata.constData(), static_cast<size_t>(savedata.size()));
-      tox_ = std::make_unique<ToxCore::ToxCoreWrapper>(data);
+      try {
+        std::vector<uint8_t> data(static_cast<size_t>(savedata.size()));
+        std::memcpy(data.data(), savedata.constData(),
+                    static_cast<size_t>(savedata.size()));
+        tox_ = std::make_unique<ToxCore::ToxCoreWrapper>(data);
+        addNotice(QStringLiteral("tox"), QStringLiteral("已从数据库恢复 Tox 身份。"));
+      } catch (std::exception const &e) {
+        addNotice(QStringLiteral("tox"),
+                  QStringLiteral("恢复 Tox 身份失败，已创建新身份：%1")
+                      .arg(QString::fromUtf8(e.what())),
+                  QStringLiteral("warning"));
+        tox_ = std::make_unique<ToxCore::ToxCoreWrapper>();
+      }
     } else {
       tox_ = std::make_unique<ToxCore::ToxCoreWrapper>();
+      addNotice(QStringLiteral("tox"), QStringLiteral("已创建新的 Tox 身份。"));
     }
 
     tox_->SetSelfName(accountName_.toStdString());
@@ -663,16 +680,19 @@ void AppController::startTox() {
     persistSavedata();
     scheduleIterate();
     refreshTimer_.start();
-    addNotice(QStringLiteral("tox"), QStringLiteral("session-only Tox identity ready."));
+    addNotice(QStringLiteral("tox"), QStringLiteral("Tox identity ready."));
+    return true;
   } catch (std::exception const &e) {
     tox_.reset();
     selfToxId_ = QStringLiteral("Tox startup failed");
     networkStatus_ = QStringLiteral("network: offline");
     emit selfToxIdChanged();
     emit networkStatusChanged();
-    addNotice(QStringLiteral("tox"),
-              QStringLiteral("Tox startup failed: %1").arg(QString::fromUtf8(e.what())),
-              QStringLiteral("error"));
+    QString const message =
+        QStringLiteral("Tox startup failed: %1").arg(QString::fromUtf8(e.what()));
+    setProfileMessage(message);
+    addNotice(QStringLiteral("tox"), message, QStringLiteral("error"));
+    return false;
   }
 }
 
@@ -861,6 +881,14 @@ void AppController::addNotice(QString const &category, QString const &text,
   noticeModel_.addNotice({timestampText(), category, text, severity});
   ++noticeUnread_;
   emit noticeUnreadChanged();
+}
+
+void AppController::setProfileMessage(QString const &message) {
+  if (profileMessage_ == message) {
+    return;
+  }
+  profileMessage_ = message;
+  emit profileMessageChanged();
 }
 
 void AppController::selectConversation(ConversationKind kind,

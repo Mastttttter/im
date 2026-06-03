@@ -39,7 +39,7 @@ Item {
             spacing: 14
 
             Label {
-                text: "Welcode using IM"
+                text: "欢迎使用 IM"
                 color: "#ffffff"
                 font.pixelSize: 28
                 font.bold: true
@@ -98,6 +98,14 @@ Item {
                     wrapMode: Text.WordWrap
                     text: "⚠️ 重要提示：\n• 账号仅允许英文+数字+下划线，不少于5个字符，不多于10个字符\n• 密码仅支持英文+数字，不得少于8个字符\n• 本地不存储密码，忘记密码将导致数据永久丢失"
                 }
+            }
+
+            Label {
+                text: controller ? controller.profileMessage : ""
+                visible: text.length > 0
+                color: "#ffffff"
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
             }
 
             RowLayout {

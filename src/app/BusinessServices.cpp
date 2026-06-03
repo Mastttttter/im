@@ -59,6 +59,16 @@ void SaveLastAccount(QString const &account) {
   }
 }
 
+QString LoginErrorMessage(std::exception const &e) {
+  QString const detail = QString::fromUtf8(e.what());
+  if (detail.contains(QStringLiteral("not a database"), Qt::CaseInsensitive) ||
+      detail.contains(QStringLiteral("wrong password"), Qt::CaseInsensitive) ||
+      detail.contains(QStringLiteral("file is encrypted"), Qt::CaseInsensitive)) {
+    return QStringLiteral("密码错误或数据库无法打开。");
+  }
+  return detail;
+}
+
 QStringList normalizedKnownAccounts() {
   auto baseDir = AppDataDirOrEmpty();
   QStringList out;
@@ -133,16 +143,17 @@ ProfileResult ProfileService::loginOrRegister(QString const &account,
   }
 
   bool const known = isKnownAccount(name);
-  if (registerNew || !known) {
-    if (password != confirmPassword) {
-      return {false, false, QStringLiteral("两次输入的密码不一致。")};
-    }
-    rememberAccount(name);
-    return {true, true, QStringLiteral("账号已通过本地占位注册。")};
+  bool const createAccount = registerNew || !known;
+  if (createAccount && password != confirmPassword) {
+    return {false, false, QStringLiteral("两次输入的密码不一致。")};
   }
 
+  ProfileResult result = InitDb_(name, password, createAccount);
+  if (!result.success) {
+    return result;
+  }
   rememberAccount(name);
-  return {true, false, QStringLiteral("账号已通过本地占位登录。")};
+  return result;
 }
 
 ProfileResult ProfileService::changePassword(QString const &account,
@@ -152,6 +163,9 @@ ProfileResult ProfileService::changePassword(QString const &account,
   QString const name = normalizedAccount(account);
   if (name.isEmpty()) {
     return {false, false, QStringLiteral("请输入账号名称。")};
+  }
+  if (!isKnownAccount(name)) {
+    return {false, false, QStringLiteral("账号不存在，无法更换密码。")};
   }
   if (oldPassword.isEmpty()) {
     return {false, false, QStringLiteral("请输入当前密码。")};
@@ -166,8 +180,21 @@ ProfileResult ProfileService::changePassword(QString const &account,
   if (newPassword != confirmPassword) {
     return {false, false, QStringLiteral("两次输入的新密码不一致。")};
   }
-  rememberAccount(name);
-  return {true, false, QStringLiteral("密码更换占位流程已完成。")};
+
+  try {
+    if (store_.IsOpen()) {
+      store_.ChangePassword(oldPassword, newPassword);
+    } else {
+      Persistence::SqliteStorage store;
+      store.OpenForProfile(name, oldPassword);
+      store.ChangePassword(oldPassword, newPassword);
+    }
+    rememberAccount(name);
+    return {true, false, QStringLiteral("密码已更换，请使用新密码登录。")};
+  } catch (std::exception const &e) {
+    return {false, false,
+            QStringLiteral("密码更换失败：%1").arg(LoginErrorMessage(e))};
+  }
 }
 
 bool ProfileService::isAccountNameValid(QString const &account) {
@@ -184,8 +211,9 @@ QString ProfileService::normalizedAccount(QString const &account) {
   return account.trimmed();
 }
 
-void ProfileService::InitDb_(QString const &profileName,
-                             QString const &password) {
+ProfileResult ProfileService::InitDb_(QString const &profileName,
+                                      QString const &password,
+                                      bool created) {
   try {
     store_.OpenForProfile(profileName, password);
     AppLog::LogHub::Instance().AppendInfo(
@@ -193,7 +221,7 @@ void ProfileService::InitDb_(QString const &profileName,
         QStringLiteral("opened encrypted sqlite store (account=%1) DB=%2")
             .arg(profileName, store_.DbFilePath()));
     try {
-      int deletedCount = store_.CleanupDuplicateMessages();
+      int const deletedCount = store_.CleanupDuplicateMessages();
       if (deletedCount > 0) {
         AppLog::LogHub::Instance().AppendInfo(
             QStringLiteral("db"),
@@ -206,34 +234,46 @@ void ProfileService::InitDb_(QString const &profileName,
           QStringLiteral("cleanup duplicates failed: %1")
               .arg(QString::fromUtf8(e.what())));
     }
-    try {
-      store_.EnsureContact(QString::fromLatin1(kAiLocalPubKey),
-                           QDateTime::currentMSecsSinceEpoch());
-    } catch (...) {}
+    store_.EnsureContact(QString::fromLatin1(kAiLocalPubKey),
+                         QDateTime::currentMSecsSinceEpoch());
+    return {true, created,
+            created ? QStringLiteral("账号已注册并打开本地加密数据库。")
+                    : QStringLiteral("账号已登录并打开本地加密数据库。")};
   } catch (std::exception const &e) {
     AppLog::LogHub::Instance().AppendError(
         u"exception"_s,
-        u"open qlite store failed: %1"_s.arg(QString::fromUtf8(e.what())));
-    return;
+        u"open sqlite store failed: %1"_s.arg(QString::fromUtf8(e.what())));
+    return {false, created,
+            QStringLiteral("登录失败：%1").arg(LoginErrorMessage(e))};
   }
 }
 
 void ProfileService::rememberAccount(QString const &account) const {
-  QStringList accounts = normalizedKnownAccounts();
-  accounts.removeAll(account);
-  accounts.prepend(account);
+  SaveLastAccount(account);
   QSettings settings;
-  settings.setValue(QStringLiteral("profiles/accounts"), accounts);
   settings.setValue(QStringLiteral("profiles/lastAccount"), account);
 }
 
 QByteArray StorageService::loadToxSavedata(QString const &account) const {
-  return savedataByAccount_.value(account);
+  Q_UNUSED(account)
+  if (!store_.IsOpen()) {
+    return {};
+  }
+  try {
+    std::optional<QByteArray> savedata = store_.LoadToxSavedata();
+    return savedata.value_or(QByteArray{});
+  } catch (...) {
+    return {};
+  }
 }
 
 void StorageService::saveToxSavedata(QString const &account,
                                      QByteArray const &savedata) {
-  savedataByAccount_.insert(account, savedata);
+  Q_UNUSED(account)
+  if (!store_.IsOpen() || savedata.isEmpty()) {
+    return;
+  }
+  store_.SaveToxSavedata(savedata, QDateTime::currentMSecsSinceEpoch());
 }
 
 QString StorageService::themePreference() const {

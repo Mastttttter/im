@@ -3,6 +3,8 @@
 #include <QList>
 #include <QString>
 #include <QtGlobal>
+#include <memory>
+#include <optional>
 
 namespace SQLite {
 class Database;
@@ -37,6 +39,9 @@ class SqliteStorage {
     QString body;
     int64_t createdAtMs{0};
   };
+
+  SqliteStorage();
+  ~SqliteStorage();
 
   bool IsOpen() const;
   QString DbFilePath() const;
@@ -185,8 +190,6 @@ class SqliteStorage {
 
   private:
   bool dbOpenSuccess_ = false;
-  SqliteStorage();
-  ~SqliteStorage();
   void Close_();
   void Exec_(char const *sql);
   void Exec_(std::string const &sql);

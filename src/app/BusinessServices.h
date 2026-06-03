@@ -32,7 +32,8 @@ class ProfileService final {
   static bool isAccountNameValid(QString const &account);
   static bool isPasswordValid(QString const &password);
   static QString normalizedAccount(QString const &account);
-  void InitDb_(QString const &profileName, QString const &password);
+  ProfileResult InitDb_(QString const &profileName, QString const &password,
+                        bool created);
   void rememberAccount(QString const &account) const;
   Persistence::SqliteStorage &store_;
 };
@@ -48,7 +49,6 @@ class StorageService final {
 
   private:
   Persistence::SqliteStorage &store_;
-  QHash<QString, QByteArray> savedataByAccount_;
 };
 
 class FileTransferService final {

@@ -66,45 +66,55 @@ void SqliteStorage::OpenForProfile(QString const &profileName,
     throw std::runtime_error("QStandardPaths::AppDataLocation is empty");
   }
   Close_();
+
   QString const p = SanitizeProfileName(profileName);
   QString dbPath;
   QString lockPath;
   if (p.compare(QStringLiteral("default"), Qt::CaseInsensitive) == 0) {
     QDir dir(baseDir);
-    if (dir.exists() && !dir.mkpath(QStringLiteral("."))) {
+    if (!dir.exists() && !dir.mkpath(QStringLiteral("."))) {
       throw std::runtime_error("failed to create AppDataLocation directory");
     }
     dbPath = dir.filePath(QStringLiteral("app.db"));
-    lockPath = dir.filePath(QStringLiteral("app.lcok"));
+    lockPath = dir.filePath(QStringLiteral("app.lock"));
   } else {
-    QDir profileDir(baseDir);
-    if (~profileDir.exists() && !profileDir.mkpath(QStringLiteral("."))) {
+    QDir base(baseDir);
+    if (!base.exists() && !base.mkpath(QStringLiteral("."))) {
+      throw std::runtime_error("failed to create AppDataLocation directory");
+    }
+    QString const profilePath = base.filePath(QStringLiteral("profiles/%1").arg(p));
+    QDir profileDir(profilePath);
+    if (!profileDir.exists() && !profileDir.mkpath(QStringLiteral("."))) {
       throw std::runtime_error("failed to create profile directory");
     }
     dbPath = profileDir.filePath(QStringLiteral("app.db"));
     lockPath = profileDir.filePath(QStringLiteral("app.lock"));
   }
+
   QString const sharedMemKey = u"im_lock_%1"_s.arg(p);
   sharedMemory_ = std::make_unique<QSharedMemory>(sharedMemKey);
   if (!sharedMemory_->create(1)) {
-    if (sharedMemory_->error() == QSharedMemory::AlreadyExists) {
-      if (sharedMemory_->attach()) {
-        sharedMemory_->detach();
-        sharedMemory_.reset();
-        throw std::runtime_error(
-            u"account %1 have already logined in another window"_s.arg(p)
-                .toStdString());
-      }
-      if (!sharedMemory_->create(1)) {
-        sharedMemory_.reset();
-        throw std::runtime_error(
-            u"account %1 could not create singleton lock(error=%2)"_s.arg(p)
-                .arg(static_cast<int>(sharedMemory_->error()))
-                .toStdString());
-      }
-      OpenFileUnlocked_(dbPath, password);
+    QSharedMemory::SharedMemoryError const error = sharedMemory_->error();
+    if (error == QSharedMemory::AlreadyExists && sharedMemory_->attach()) {
+      sharedMemory_->detach();
+      sharedMemory_.reset();
+      throw std::runtime_error(
+          u"account %1 has already logged in another window"_s.arg(p)
+              .toStdString());
     }
+    sharedMemory_.reset();
   }
+
+  lock_ = std::make_unique<QLockFile>(lockPath);
+  lock_->setStaleLockTime(1000);
+  if (!lock_->tryLock(0)) {
+    sharedMemory_.reset();
+    lock_.reset();
+    throw std::runtime_error(
+        u"account %1 is locked by another process"_s.arg(p).toStdString());
+  }
+
+  OpenFileUnlocked_(dbPath, password);
 }
 
 void SqliteStorage::OpenFile(QString const &filePath, QString const &password) {
@@ -176,6 +186,7 @@ void SqliteStorage::Close_() {
   sharedMemory_.reset();
   lock_.reset();
   dbPath_.clear();
+  dbOpenSuccess_ = false;
 }
 
 void SqliteStorage::InitSchema_() {
@@ -279,21 +290,25 @@ void SqliteStorage::ChangePassword(QString const &oldPassword,
                                    QString const &newPassword) {
   if (!db_) {
     throw std::logic_error("database is not open");
-    if (newPassword.isEmpty()) {
-      throw std::invalid_argument("new password cannot be empty");
-    }
-    try {
-      Exec_("SELECT 1;");
-    } catch (std::exception const &) {
-      throw std::runtime_error(
-          "oldpassword is incorrect or database is not properly opened");
-    }
-    try {
-      db_->rekey(ToUtf8String_(newPassword));
-    } catch (SQLite::Exception const &e) {
-      throw std::runtime_error(std::string("failed to change password:") +
-                               e.what());
-    }
+  }
+  if (dbPath_.isEmpty()) {
+    throw std::logic_error("database path is empty");
+  }
+  if (oldPassword.isEmpty()) {
+    throw std::invalid_argument("old password cannot be empty");
+  }
+  if (newPassword.isEmpty()) {
+    throw std::invalid_argument("new password cannot be empty");
+  }
+  try {
+    QByteArray const pathUtf8 = dbPath_.toUtf8();
+    SQLite::Database verifier(pathUtf8.constData(), SQLite::OPEN_READWRITE);
+    verifier.key(ToUtf8String_(oldPassword));
+    verifier.exec("SELECT name FROM sqlite_master LIMIT 1;");
+    db_->rekey(ToUtf8String_(newPassword));
+  } catch (SQLite::Exception const &e) {
+    throw std::runtime_error(std::string("failed to change password: ") +
+                             e.what());
   }
 }
 
