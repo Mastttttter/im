@@ -1,0 +1,9 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+    <qresource prefix="/">
+        <file>icon.svg</file>
+        <file>sun.svg</file>
+        <file>moon.svg</file>
+        <file>login_background.svg</file>
+    </qresource>
+</RCC>
