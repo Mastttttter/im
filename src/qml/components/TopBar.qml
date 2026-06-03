@@ -82,25 +82,29 @@ Rectangle {
         RowLayout {
             Layout.fillWidth: true
             spacing: 8
-            Button {
-                id: statusButton
-                text: controller.statusMessage.length > 0 ? controller.statusMessage : "点击设置个签"
-                flat: true
-                leftPadding: 0
-                rightPadding: 8
+            Item {
+                id: statusLink
                 Layout.preferredWidth: 190
                 Layout.preferredHeight: 32
-                ToolTip.visible: hovered && controller.statusMessage.length > 0
+                ToolTip.visible: statusMouse.containsMouse && controller.statusMessage.length > 0
                 ToolTip.text: controller.statusMessage
-                contentItem: Label {
-                    text: statusButton.text
-                    color: statusButton.hovered ? theme.accent : theme.muted
+
+                Label {
+                    anchors.fill: parent
+                    text: controller.statusMessage.length > 0 ? controller.statusMessage : "点击设置个签"
+                    color: statusMouse.containsMouse ? theme.accent : theme.muted
                     elide: Text.ElideRight
                     verticalAlignment: Text.AlignVCenter
-                    font.underline: statusButton.hovered
+                    font.underline: statusMouse.containsMouse
                 }
-                background: Rectangle { color: "transparent" }
-                onClicked: setStatusMessageDialog.open()
+
+                MouseArea {
+                    id: statusMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: setStatusMessageDialog.open()
+                }
             }
             Button {
                 text: "添加好友"
@@ -135,7 +139,7 @@ Rectangle {
     SetStatusMessageDialog {
         id: setStatusMessageDialog
 
-        controller: controller
-        theme: theme
+        controller: root.controller
+        theme: root.theme
     }
 }
