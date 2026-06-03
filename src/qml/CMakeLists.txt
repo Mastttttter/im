@@ -16,5 +16,6 @@ qt_add_qml_module(im
         dialogs/AddFriendDialog.qml
         dialogs/ChangePasswordDialog.qml
         dialogs/CallWindow.qml
+        dialogs/SetStatusMessageDialog.qml
         style/Theme.qml
 )
