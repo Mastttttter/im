@@ -12,7 +12,7 @@ int main(int argc, char **argv) {
   QGuiApplication app(argc, argv);
   AppLog::Install();
   QCoreApplication::setOrganizationName(QStringLiteral("im"));
-  QCoreApplication::setApplicationName(QStringLiteral("im-qml"));
+  QCoreApplication::setApplicationName(QStringLiteral("im"));
   QQuickStyle::setStyle(QStringLiteral("Material"));
 
   AppController controller;
