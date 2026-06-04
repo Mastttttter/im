@@ -10,6 +10,8 @@ Rectangle {
     signal addFriendRequested
     signal changePasswordRequested
     signal noticeRequested
+    signal deleteFriendRequested
+    signal editFriendRemarkRequested
 
     radius: 8
     color: theme.window
@@ -116,7 +118,13 @@ Rectangle {
             }
             Button {
                 text: "删除好友"
-                onClicked: controller.deleteSelectedFriend()
+                enabled: controller.hasSelectedFriend
+                onClicked: root.deleteFriendRequested()
+            }
+            Button {
+                text: "编辑备注"
+                enabled: controller.hasSelectedFriend
+                onClicked: root.editFriendRemarkRequested()
             }
             Button {
                 text: "创建群聊"

@@ -7,13 +7,19 @@ Dialog {
     property var controller
     property var theme
 
-    title: "添加好友"
+    title: "删除好友"
     modal: true
     standardButtons: Dialog.NoButton
-    width: 440
+    width: 420
     x: parent ? (parent.width - width) / 2 : 0
     y: parent ? (parent.height - height) / 2 : 0
     padding: 16
+
+    onOpened: {
+        if (!controller || !controller.hasSelectedFriend) {
+            root.close()
+        }
+    }
 
     background: Rectangle { color: theme.panel; radius: 10; border.color: theme.border }
 
@@ -21,21 +27,19 @@ Dialog {
         anchors.fill: parent
         spacing: 12
 
-        Label { text: "ToxID："; color: theme.text; font.bold: true }
-        TextField {
-            id: toxIdField
+        Label {
+            text: controller ? "确认删除好友 “" + controller.selectedFriendDisplayName + "”？" : "确认删除好友？"
+            color: theme.text
+            font.bold: true
+            wrapMode: Text.Wrap
             Layout.fillWidth: true
-            placeholderText: "76 位十六进制 ToxID"
         }
 
-        Label { text: "附言："; color: theme.text; font.bold: true }
-        TextArea {
-            id: messageField
+        Label {
+            text: "此操作只会从本地好友列表删除对方，不会通知对方；备注和历史记录会保留。"
+            color: theme.muted
+            wrapMode: Text.Wrap
             Layout.fillWidth: true
-            Layout.preferredHeight: 90
-            placeholderText: "好友请求附言（可选）"
-            text: controller && controller.accountName.length > 0 ? "您好，我是" + controller.accountName : "您好"
-            wrapMode: TextArea.Wrap
         }
 
         RowLayout {
@@ -43,11 +47,10 @@ Dialog {
             Item { Layout.fillWidth: true }
             Button { text: "取消"; onClicked: root.close() }
             Button {
-                text: "确认"
+                text: "删除"
                 highlighted: true
                 onClicked: {
-                    controller.addFriend(toxIdField.text, messageField.text)
-                    toxIdField.text = ""
+                    controller.deleteSelectedFriend()
                     root.close()
                 }
             }

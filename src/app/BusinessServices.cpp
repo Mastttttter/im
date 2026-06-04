@@ -276,6 +276,40 @@ void StorageService::saveToxSavedata(QString const &account,
   store_.SaveToxSavedata(savedata, QDateTime::currentMSecsSinceEpoch());
 }
 
+void StorageService::ensureContact(QString const &publicKey) const {
+  QString const key = publicKey.trimmed();
+  if (!store_.IsOpen() || key.isEmpty()) {
+    return;
+  }
+  try {
+    store_.EnsureContact(key, QDateTime::currentMSecsSinceEpoch());
+  } catch (...) {}
+}
+
+QString StorageService::contactNickname(QString const &publicKey) const {
+  QString const key = publicKey.trimmed();
+  if (!store_.IsOpen() || key.isEmpty()) {
+    return {};
+  }
+  try {
+    return store_.GetContactNickname(key);
+  } catch (...) {
+    return {};
+  }
+}
+
+void StorageService::setContactNickname(QString const &publicKey,
+                                        QString const &nickname) const {
+  QString const key = publicKey.trimmed();
+  if (!store_.IsOpen() || key.isEmpty()) {
+    return;
+  }
+  try {
+    store_.EnsureContact(key, QDateTime::currentMSecsSinceEpoch());
+    store_.SetContactNickname(key, nickname.trimmed());
+  } catch (...) {}
+}
+
 QString StorageService::themePreference() const {
   QSettings settings;
   return settings.value(QStringLiteral("ui/theme"), QStringLiteral("dark"))

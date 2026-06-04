@@ -10,6 +10,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QRegularExpression>
 #include <QStringView>
 #include <algorithm>
 #include <cstring>
@@ -39,6 +40,11 @@ QString avatarText(QString const &displayName) {
     return QStringLiteral("?");
   }
   return trimmed.left(1).toUpper();
+}
+
+bool isHexString(QString const &text) {
+  static QRegularExpression const pattern(QStringLiteral("^[0-9A-Fa-f]+$"));
+  return pattern.match(text).hasMatch();
 }
 
 QJsonArray nodeArrayFromDocument(QJsonDocument const &doc) {
@@ -168,6 +174,42 @@ QString AppController::selectedConversationKind() const {
   return conversationKindText(selectedKind_);
 }
 QString AppController::selectedConversationTitle() const { return selectedTitle_; }
+
+bool AppController::hasPendingFriendRequest() const {
+  return !pendingFriendRequests_.isEmpty();
+}
+
+QString AppController::pendingFriendRequestPublicKey() const {
+  return pendingFriendRequests_.isEmpty() ? QString() : pendingFriendRequests_.first().publicKey;
+}
+
+QString AppController::pendingFriendRequestMessage() const {
+  return pendingFriendRequests_.isEmpty() ? QString() : pendingFriendRequests_.first().message;
+}
+
+bool AppController::hasSelectedFriend() const {
+  return selectedKind_ == ConversationKind::Friend && !selectedIdentifier_.isEmpty();
+}
+
+QString AppController::selectedFriendDisplayName() const {
+  if (!hasSelectedFriend()) {
+    return {};
+  }
+  ContactItem item;
+  if (friendModel_.contact(selectedIdentifier_, item)) {
+    return item.displayName;
+  }
+  return selectedTitle_;
+}
+
+QString AppController::selectedFriendRemark() const {
+  QString const publicKey = publicKeyForFriendIdentifier(selectedIdentifier_);
+  if (publicKey.isEmpty()) {
+    return {};
+  }
+  return storageService_.contactNickname(publicKey);
+}
+
 bool AppController::callActive() const { return callActive_; }
 bool AppController::callVideoEnabled() const { return callVideoEnabled_; }
 QString AppController::callTitle() const { return callTitle_; }
@@ -333,47 +375,100 @@ void AppController::addFriend(QString const &toxId, QString const &message) {
   QString cleaned = toxId.trimmed();
   cleaned.remove(QChar(' '));
   cleaned.remove(QChar(':'));
+  cleaned = cleaned.toUpper();
   QString request = message.trimmed().isEmpty()
                         ? QStringLiteral("您好，我是%1").arg(accountName_)
                         : message.trimmed();
 
-  if (cleaned.size() == 76 && tox_) {
-    try {
-      uint32_t const friendNumber = tox_->AddFriend(cleaned.toStdString(),
-                                                    request.toStdString());
-      persistSavedata();
-      refreshFriendList();
-      selectFriend(QString::number(friendNumber));
-      addNotice(QStringLiteral("friend"),
-                QStringLiteral("好友请求已发送到 %1。")
-                    .arg(cleaned.left(12)));
-      return;
-    } catch (std::exception const &e) {
-      addNotice(QStringLiteral("friend"),
-                QStringLiteral("真实好友请求失败，已保留为界面占位：%1")
-                    .arg(QString::fromUtf8(e.what())),
-                QStringLiteral("warning"));
-    }
+  if (cleaned.size() != 76 || !isHexString(cleaned)) {
+    addNotice(QStringLiteral("friend"), QStringLiteral("请输入 76 位十六进制 ToxID。"),
+              QStringLiteral("warning"));
+    return;
+  }
+  if (!tox_) {
+    addNotice(QStringLiteral("friend"), QStringLiteral("Tox 尚未就绪，无法发送好友请求。"),
+              QStringLiteral("warning"));
+    return;
   }
 
-  QString const id = makeStubFriendIdentifier();
-  QString const title = cleaned.isEmpty()
-                            ? QStringLiteral("待添加好友")
-                            : QStringLiteral("好友 %1").arg(cleaned.left(8));
-  stubFriends_.insert(id, {id,
-                           title,
-                           QStringLiteral("好友请求占位 · %1").arg(request),
-                           0,
-                           0,
-                           avatarText(title),
-                           cleaned,
-                           false});
-  refreshFriendList();
-  selectFriend(id);
+  try {
+    uint32_t const friendNumber = tox_->AddFriend(cleaned.toStdString(),
+                                                  request.toStdString());
+    storageService_.ensureContact(cleaned.left(64));
+    persistSavedata();
+    refreshFriendList();
+    selectFriend(QString::number(friendNumber));
+    addNotice(QStringLiteral("friend"),
+              QStringLiteral("好友请求已发送到 %1。").arg(cleaned.left(12)));
+  } catch (std::exception const &e) {
+    addNotice(QStringLiteral("friend"),
+              QStringLiteral("好友请求发送失败：%1").arg(QString::fromUtf8(e.what())),
+              QStringLiteral("warning"));
+  }
+}
+
+bool AppController::acceptPendingFriendRequest() {
+  if (pendingFriendRequests_.isEmpty()) {
+    addNotice(QStringLiteral("friend"), QStringLiteral("当前没有待处理的好友请求。"),
+              QStringLiteral("warning"));
+    return false;
+  }
+  if (!tox_) {
+    addNotice(QStringLiteral("friend"), QStringLiteral("Tox 尚未就绪，暂时无法同意好友请求。"),
+              QStringLiteral("warning"));
+    return false;
+  }
+
+  PendingFriendRequest const request = pendingFriendRequests_.first();
+  try {
+    for (uint32_t const existingFriend: tox_->GetFriendList()) {
+      if (friendPublicKey(existingFriend) == request.publicKey) {
+        storageService_.ensureContact(request.publicKey);
+        pendingFriendRequests_.removeFirst();
+        emit pendingFriendRequestChanged();
+        refreshFriendList();
+        selectFriend(QString::number(existingFriend));
+        addNotice(QStringLiteral("friend"), QStringLiteral("好友已在列表中。"));
+        if (!pendingFriendRequests_.isEmpty()) {
+          emit friendRequestPromptRequested();
+        }
+        return true;
+      }
+    }
+    uint32_t const friendNumber = tox_->AddFriendNoRequest(request.publicKey.toStdString());
+    storageService_.ensureContact(request.publicKey);
+    persistSavedata();
+    pendingFriendRequests_.removeFirst();
+    emit pendingFriendRequestChanged();
+    refreshFriendList();
+    selectFriend(QString::number(friendNumber));
+    addNotice(QStringLiteral("friend"),
+              QStringLiteral("已同意来自 %1 的好友请求。").arg(request.publicKey.left(12)));
+    if (!pendingFriendRequests_.isEmpty()) {
+      emit friendRequestPromptRequested();
+    }
+    return true;
+  } catch (std::exception const &e) {
+    addNotice(QStringLiteral("friend"),
+              QStringLiteral("同意好友请求失败：%1").arg(QString::fromUtf8(e.what())),
+              QStringLiteral("warning"));
+    return false;
+  }
+}
+
+bool AppController::rejectPendingFriendRequest() {
+  if (pendingFriendRequests_.isEmpty()) {
+    return false;
+  }
+  PendingFriendRequest const request = pendingFriendRequests_.first();
+  pendingFriendRequests_.removeFirst();
+  emit pendingFriendRequestChanged();
   addNotice(QStringLiteral("friend"),
-            QStringLiteral("添加好友界面占位已创建。"),
-            cleaned.size() == 76 ? QStringLiteral("info")
-                                 : QStringLiteral("warning"));
+            QStringLiteral("已拒绝来自 %1 的好友请求。").arg(request.publicKey.left(12)));
+  if (!pendingFriendRequests_.isEmpty()) {
+    emit friendRequestPromptRequested();
+  }
+  return true;
 }
 
 void AppController::deleteSelectedFriend() {
@@ -385,7 +480,12 @@ void AppController::deleteSelectedFriend() {
 
   bool ok = false;
   uint32_t const friendNumber = selectedIdentifier_.toUInt(&ok);
-  if (ok && tox_) {
+  if (ok) {
+    if (!tox_) {
+      addNotice(QStringLiteral("friend"), QStringLiteral("Tox 尚未就绪，无法删除真实好友。"),
+                QStringLiteral("warning"));
+      return;
+    }
     try {
       tox_->DeleteFriend(friendNumber);
       friendUnreadCount_.remove(friendNumber);
@@ -402,10 +502,31 @@ void AppController::deleteSelectedFriend() {
     stubFriends_.remove(selectedIdentifier_);
   }
 
-  chatHistory_.remove(conversationKey(ConversationKind::Friend, selectedIdentifier_));
   refreshFriendList();
   addNotice(QStringLiteral("friend"), QStringLiteral("好友已从本地列表删除。"));
   selectAssistant();
+}
+
+bool AppController::setSelectedFriendRemark(QString const &remark) {
+  if (!hasSelectedFriend()) {
+    addNotice(QStringLiteral("friend"), QStringLiteral("请先选择好友。"),
+              QStringLiteral("warning"));
+    return false;
+  }
+  QString const publicKey = publicKeyForFriendIdentifier(selectedIdentifier_);
+  if (publicKey.isEmpty()) {
+    addNotice(QStringLiteral("friend"), QStringLiteral("当前好友没有可保存备注的公钥。"),
+              QStringLiteral("warning"));
+    return false;
+  }
+
+  storageService_.setContactNickname(publicKey, remark);
+  refreshFriendList();
+  refreshSelectedFriendTitle();
+  addNotice(QStringLiteral("friend"),
+            remark.trimmed().isEmpty() ? QStringLiteral("好友备注已清除。")
+                                       : QStringLiteral("好友备注已更新。"));
+  return true;
 }
 
 void AppController::createGroup(QString const &title) {
@@ -659,6 +780,12 @@ bool AppController::startTox() {
   iterateTimer_.stop();
   refreshTimer_.stop();
   tox_.reset();
+  pendingFriendRequests_.clear();
+  friendUnreadCount_.clear();
+  groupUnreadCount_.clear();
+  friendConnectionCache_.clear();
+  friendPublicKeyCache_.clear();
+  emit pendingFriendRequestChanged();
   selfConnection_ = TOX_CONNECTION_NONE;
   networkStatus_ = QStringLiteral("network: starting");
   emit networkStatusChanged();
@@ -728,10 +855,22 @@ void AppController::registerToxCallbacks() {
 
   tox_->SetOnFriendRequest([this](std::string const &publicKeyHex,
                                   std::string const &message) {
-    QString const publicKey = QString::fromStdString(publicKeyHex);
+    QString const publicKey = QString::fromStdString(publicKeyHex).toUpper();
+    QString const requestMessage = fromUtf8(message);
+    for (PendingFriendRequest &request: pendingFriendRequests_) {
+      if (request.publicKey == publicKey) {
+        request.message = requestMessage;
+        emit pendingFriendRequestChanged();
+        emit friendRequestPromptRequested();
+        return;
+      }
+    }
+    pendingFriendRequests_.push_back({publicKey, requestMessage});
     addNotice(QStringLiteral("friend"),
               QStringLiteral("收到来自 %1 的好友请求：%2")
-                  .arg(publicKey.left(12), fromUtf8(message)));
+                  .arg(publicKey.left(12), requestMessage));
+    emit pendingFriendRequestChanged();
+    emit friendRequestPromptRequested();
   });
 
   tox_->SetOnFriendConnectionStatus(
@@ -874,6 +1013,7 @@ void AppController::refreshFriendList() {
     }
   }
   friendModel_.setContacts(contacts);
+  refreshSelectedFriendTitle();
 }
 
 void AppController::refreshGroupList() {
@@ -975,21 +1115,29 @@ QString AppController::friendDisplayName(uint32_t friendNumber) const {
   if (!tox_ || friendNumber == kInvalidNumber) {
     return QStringLiteral("friend");
   }
+
+  QString const publicKey = friendPublicKey(friendNumber);
+  if (!publicKey.isEmpty()) {
+    storageService_.ensureContact(publicKey);
+    QString const remark = storageService_.contactNickname(publicKey).trimmed();
+    if (!remark.isEmpty()) {
+      return remark;
+    }
+  }
+
   try {
     QString const name = fromUtf8(tox_->GetFriendName(friendNumber)).trimmed();
     if (!name.isEmpty()) {
       return name;
     }
-    QString const publicKey =
-        QString::fromStdString(tox_->GetFriendPublicKeyHex(friendNumber));
-    if (!publicKey.isEmpty()) {
-      return QStringLiteral("friend %1").arg(publicKey.left(8));
-    }
   } catch (...) {}
+  if (!publicKey.isEmpty()) {
+    return QStringLiteral("friend %1").arg(publicKey.left(8));
+  }
   return QStringLiteral("friend %1").arg(friendNumber);
 }
 
-QString AppController::friendPublicKey(uint32_t friendNumber) {
+QString AppController::friendPublicKey(uint32_t friendNumber) const {
   if (friendNumber == kInvalidNumber || !tox_) {
     return {};
   }
@@ -998,12 +1146,41 @@ QString AppController::friendPublicKey(uint32_t friendNumber) {
   }
   try {
     QString const publicKey =
-        QString::fromStdString(tox_->GetFriendPublicKeyHex(friendNumber));
+        QString::fromStdString(tox_->GetFriendPublicKeyHex(friendNumber)).toUpper();
     friendPublicKeyCache_[friendNumber] = publicKey;
     return publicKey;
   } catch (...) {
     return {};
   }
+}
+
+QString AppController::publicKeyForFriendIdentifier(QString const &identifier) const {
+  bool ok = false;
+  uint32_t const friendNumber = identifier.toUInt(&ok);
+  if (ok) {
+    return friendPublicKey(friendNumber);
+  }
+  ContactItem item;
+  if (stubFriends_.contains(identifier)) {
+    return stubFriends_.value(identifier).publicKey;
+  }
+  if (friendModel_.contact(identifier, item)) {
+    return item.publicKey;
+  }
+  return {};
+}
+
+void AppController::refreshSelectedFriendTitle() {
+  if (!hasSelectedFriend()) {
+    return;
+  }
+  ContactItem item;
+  if (!friendModel_.contact(selectedIdentifier_, item) ||
+      item.displayName == selectedTitle_) {
+    return;
+  }
+  selectedTitle_ = item.displayName;
+  emit selectedConversationChanged();
 }
 
 QString AppController::groupDisplayName(uint32_t conferenceNumber) const {
@@ -1031,10 +1208,10 @@ ContactItem AppController::contactFromFriend(uint32_t friendNumber) const {
   try {
     connection = tox_->GetFriendConnectionStatus(friendNumber);
   } catch (...) {}
-  QString publicKey;
-  try {
-    publicKey = QString::fromStdString(tox_->GetFriendPublicKeyHex(friendNumber));
-  } catch (...) {}
+  QString const publicKey = friendPublicKey(friendNumber);
+  if (!publicKey.isEmpty()) {
+    storageService_.ensureContact(publicKey);
+  }
   QString const name = friendDisplayName(friendNumber);
   return {QString::number(friendNumber),
           name,

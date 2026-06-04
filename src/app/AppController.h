@@ -11,6 +11,7 @@
 #include <QString>
 #include <QStringList>
 #include <QTimer>
+#include <QVector>
 #include <cstdint>
 #include <memory>
 
@@ -28,6 +29,12 @@ class AppController final : public QObject {
   Q_PROPERTY(QString selectedConversationIdentifier READ selectedConversationIdentifier NOTIFY selectedConversationChanged)
   Q_PROPERTY(QString selectedConversationKind READ selectedConversationKind NOTIFY selectedConversationChanged)
   Q_PROPERTY(QString selectedConversationTitle READ selectedConversationTitle NOTIFY selectedConversationChanged)
+  Q_PROPERTY(bool hasPendingFriendRequest READ hasPendingFriendRequest NOTIFY pendingFriendRequestChanged)
+  Q_PROPERTY(QString pendingFriendRequestPublicKey READ pendingFriendRequestPublicKey NOTIFY pendingFriendRequestChanged)
+  Q_PROPERTY(QString pendingFriendRequestMessage READ pendingFriendRequestMessage NOTIFY pendingFriendRequestChanged)
+  Q_PROPERTY(bool hasSelectedFriend READ hasSelectedFriend NOTIFY selectedConversationChanged)
+  Q_PROPERTY(QString selectedFriendDisplayName READ selectedFriendDisplayName NOTIFY selectedConversationChanged)
+  Q_PROPERTY(QString selectedFriendRemark READ selectedFriendRemark NOTIFY selectedConversationChanged)
   Q_PROPERTY(bool callActive READ callActive NOTIFY callStateChanged)
   Q_PROPERTY(bool callVideoEnabled READ callVideoEnabled NOTIFY callStateChanged)
   Q_PROPERTY(QString callTitle READ callTitle NOTIFY callStateChanged)
@@ -49,6 +56,12 @@ class AppController final : public QObject {
   QString selectedConversationIdentifier() const;
   QString selectedConversationKind() const;
   QString selectedConversationTitle() const;
+  bool hasPendingFriendRequest() const;
+  QString pendingFriendRequestPublicKey() const;
+  QString pendingFriendRequestMessage() const;
+  bool hasSelectedFriend() const;
+  QString selectedFriendDisplayName() const;
+  QString selectedFriendRemark() const;
   bool callActive() const;
   bool callVideoEnabled() const;
   QString callTitle() const;
@@ -76,7 +89,10 @@ class AppController final : public QObject {
   Q_INVOKABLE void selectGroup(QString const &identifier);
   Q_INVOKABLE void selectAssistant();
   Q_INVOKABLE void addFriend(QString const &toxId, QString const &message);
+  Q_INVOKABLE bool acceptPendingFriendRequest();
+  Q_INVOKABLE bool rejectPendingFriendRequest();
   Q_INVOKABLE void deleteSelectedFriend();
+  Q_INVOKABLE bool setSelectedFriendRemark(QString const &remark);
   Q_INVOKABLE void createGroup(QString const &title);
   Q_INVOKABLE void inviteSelectedFriendToGroup();
   Q_INVOKABLE void leaveSelectedGroup();
@@ -98,6 +114,8 @@ class AppController final : public QObject {
   void knownAccountsChanged();
   void profileMessageChanged();
   void selectedConversationChanged();
+  void pendingFriendRequestChanged();
+  void friendRequestPromptRequested();
   void callStateChanged();
   void callShellRequested();
 
@@ -107,6 +125,10 @@ class AppController final : public QObject {
 
   private:
   enum class ConversationKind { None, Friend, Group, Assistant };
+  struct PendingFriendRequest {
+    QString publicKey;
+    QString message;
+  };
 
   bool startTox();
   void registerToxCallbacks();
@@ -129,7 +151,9 @@ class AppController final : public QObject {
   QString conversationKindText(ConversationKind kind) const;
   QString currentConversationTitle() const;
   QString friendDisplayName(uint32_t friendNumber) const;
-  QString friendPublicKey(uint32_t friendNumber);
+  QString friendPublicKey(uint32_t friendNumber) const;
+  QString publicKeyForFriendIdentifier(QString const &identifier) const;
+  void refreshSelectedFriendTitle();
   QString groupDisplayName(uint32_t conferenceNumber) const;
   QString connectionLabel(TOX_CONNECTION connection) const;
   ContactItem contactFromFriend(uint32_t friendNumber) const;
@@ -176,7 +200,8 @@ class AppController final : public QObject {
   QHash<uint32_t, int> friendUnreadCount_;
   QHash<uint32_t, int> groupUnreadCount_;
   QHash<uint32_t, TOX_CONNECTION> friendConnectionCache_;
-  QHash<uint32_t, QString> friendPublicKeyCache_;
+  mutable QHash<uint32_t, QString> friendPublicKeyCache_;
+  QVector<PendingFriendRequest> pendingFriendRequests_;
   QHash<QString, ContactItem> stubFriends_;
   QHash<QString, ContactItem> stubGroups_;
   QHash<QString, QVector<ChatMessageItem>> chatHistory_;

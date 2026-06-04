@@ -6,6 +6,9 @@ Rectangle {
     id: root
     property var controller
     property var theme
+    signal addFriendRequested()
+    signal deleteFriendRequested()
+    signal editFriendRemarkRequested()
 
     radius: 8
     color: theme.panel
@@ -77,8 +80,9 @@ Rectangle {
                 }
                 RowLayout {
                     Layout.fillWidth: true
-                    Button { text: "添加"; Layout.fillWidth: true; onClicked: addFriendPopup.open() }
-                    Button { text: "删除"; Layout.fillWidth: true; onClicked: controller.deleteSelectedFriend() }
+                    Button { text: "添加"; Layout.fillWidth: true; onClicked: root.addFriendRequested() }
+                    Button { text: "删除"; Layout.fillWidth: true; enabled: controller.hasSelectedFriend; onClicked: root.deleteFriendRequested() }
+                    Button { text: "编辑备注"; Layout.fillWidth: true; enabled: controller.hasSelectedFriend; onClicked: root.editFriendRemarkRequested() }
                 }
             }
 
@@ -109,39 +113,6 @@ Rectangle {
                     Button { text: "创建"; Layout.fillWidth: true; onClicked: controller.createGroup("群聊") }
                     Button { text: "邀请"; Layout.fillWidth: true; onClicked: controller.inviteSelectedFriendToGroup() }
                     Button { text: "退出"; Layout.fillWidth: true; onClicked: controller.leaveSelectedGroup() }
-                }
-            }
-        }
-    }
-
-    Popup {
-        id: addFriendPopup
-        modal: true
-        focus: true
-        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
-        x: (root.width - width) / 2
-        y: 80
-        width: 320
-        padding: 14
-        background: Rectangle { color: theme.panel; radius: 8; border.color: theme.border }
-        ColumnLayout {
-            anchors.fill: parent
-            Label { text: "快速添加好友"; color: theme.text; font.bold: true }
-            TextField { id: quickToxId; Layout.fillWidth: true; placeholderText: "ToxID" }
-            TextArea { id: quickMessage; Layout.fillWidth: true; Layout.preferredHeight: 70; placeholderText: "好友请求附言（可选）" }
-            RowLayout {
-                Layout.fillWidth: true
-                Item { Layout.fillWidth: true }
-                Button { text: "取消"; onClicked: addFriendPopup.close() }
-                Button {
-                    text: "确认"
-                    highlighted: true
-                    onClicked: {
-                        controller.addFriend(quickToxId.text, quickMessage.text)
-                        quickToxId.text = ""
-                        quickMessage.text = ""
-                        addFriendPopup.close()
-                    }
                 }
             }
         }

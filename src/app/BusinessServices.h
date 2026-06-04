@@ -42,6 +42,9 @@ class StorageService final {
   public:
   QByteArray loadToxSavedata(QString const &account) const;
   void saveToxSavedata(QString const &account, QByteArray const &savedata);
+  void ensureContact(QString const &publicKey) const;
+  QString contactNickname(QString const &publicKey) const;
+  void setContactNickname(QString const &publicKey, QString const &nickname) const;
   QString themePreference() const;
   void saveThemePreference(QString const &theme);
 

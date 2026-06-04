@@ -11,6 +11,8 @@ Item {
     signal addFriendRequested()
     signal changePasswordRequested()
     signal noticeRequested()
+    signal deleteFriendRequested()
+    signal editFriendRemarkRequested()
     signal fileRequested()
     signal audioCallRequested()
     signal videoCallRequested()
@@ -33,6 +35,8 @@ Item {
             onAddFriendRequested: root.addFriendRequested()
             onChangePasswordRequested: root.changePasswordRequested()
             onNoticeRequested: root.noticeRequested()
+            onDeleteFriendRequested: root.deleteFriendRequested()
+            onEditFriendRemarkRequested: root.editFriendRemarkRequested()
         }
 
         SplitView {
@@ -46,6 +50,9 @@ Item {
                 SplitView.maximumWidth: 360
                 controller: root.controller
                 theme: root.theme
+                onAddFriendRequested: root.addFriendRequested()
+                onDeleteFriendRequested: root.deleteFriendRequested()
+                onEditFriendRemarkRequested: root.editFriendRemarkRequested()
             }
 
             ChatPane {

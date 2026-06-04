@@ -14,6 +14,9 @@ qt_add_qml_module(im
         components/MessageComposer.qml
         components/NoticeCenter.qml
         dialogs/AddFriendDialog.qml
+        dialogs/IncomingFriendRequestDialog.qml
+        dialogs/DeleteFriendDialog.qml
+        dialogs/EditFriendRemarkDialog.qml
         dialogs/ChangePasswordDialog.qml
         dialogs/CallWindow.qml
         dialogs/SetStatusMessageDialog.qml

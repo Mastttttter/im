@@ -41,6 +41,8 @@ ApplicationWindow {
         controller: appController
         theme: theme
         onAddFriendRequested: addFriendDialog.open()
+        onDeleteFriendRequested: deleteFriendDialog.open()
+        onEditFriendRemarkRequested: editFriendRemarkDialog.open()
         onChangePasswordRequested: {
             changePasswordDialog.account = appController.accountName
             changePasswordDialog.open()
@@ -56,6 +58,24 @@ ApplicationWindow {
 
     AddFriendDialog {
         id: addFriendDialog
+        controller: appController
+        theme: theme
+    }
+
+    IncomingFriendRequestDialog {
+        id: incomingFriendRequestDialog
+        controller: appController
+        theme: theme
+    }
+
+    DeleteFriendDialog {
+        id: deleteFriendDialog
+        controller: appController
+        theme: theme
+    }
+
+    EditFriendRemarkDialog {
+        id: editFriendRemarkDialog
         controller: appController
         theme: theme
     }
@@ -84,6 +104,16 @@ ApplicationWindow {
         target: appController
         function onCallShellRequested() {
             callWindow.open()
+        }
+        function onFriendRequestPromptRequested() {
+            if (appController.hasPendingFriendRequest) {
+                incomingFriendRequestDialog.open()
+            }
+        }
+        function onPendingFriendRequestChanged() {
+            if (appController.hasPendingFriendRequest && !incomingFriendRequestDialog.visible) {
+                incomingFriendRequestDialog.open()
+            }
         }
     }
 }
