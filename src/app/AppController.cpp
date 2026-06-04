@@ -5,6 +5,7 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QGuiApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -12,13 +13,18 @@
 #include <QJsonValue>
 #include <QRegularExpression>
 #include <QStringView>
+#include <QStandardPaths>
+#include <QUrl>
 #include <algorithm>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <vector>
 
 namespace {
 constexpr uint32_t kInvalidNumber = std::numeric_limits<uint32_t>::max();
+constexpr int kFileRecordMessageType = 101;
 
 struct BootstrapNode {
   QString address;
@@ -32,6 +38,107 @@ QString fromUtf8(std::string const &text) {
 
 QString timestampText() {
   return QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss"));
+}
+
+QString timestampText(qint64 timestampMs) {
+  return QDateTime::fromMSecsSinceEpoch(timestampMs).toString(
+      QStringLiteral("HH:mm:ss"));
+}
+
+QString fileTransferKey(uint32_t friendNumber, uint32_t fileNumber) {
+  return QStringLiteral("%1:%2").arg(friendNumber).arg(fileNumber);
+}
+
+QString localFilePathFromUrl(QString const &localFileUrlOrPath) {
+  QString const text = localFileUrlOrPath.trimmed();
+  if (text.isEmpty()) {
+    return {};
+  }
+  QUrl const url(text);
+  if (url.isValid() && url.isLocalFile()) {
+    return url.toLocalFile();
+  }
+  return text;
+}
+
+QString safeFileName(QString fileName) {
+  fileName = fileName.trimmed();
+  fileName.replace(QChar('/'), QChar('_'));
+  fileName.replace(QChar('\\'), QChar('_'));
+  return fileName.isEmpty() ? QStringLiteral("received-file") : fileName;
+}
+
+QString suggestedReceivedFileUrl(QString const &fileName) {
+  QString directory = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
+  if (directory.isEmpty()) {
+    directory = QDir::homePath();
+  }
+  QDir().mkpath(directory);
+  return QUrl::fromLocalFile(QDir(directory).filePath(safeFileName(fileName))).toString();
+}
+
+QString fileSizeText(uint64_t bytes) {
+  static QStringList const units{QStringLiteral("B"), QStringLiteral("KB"),
+                                 QStringLiteral("MB"), QStringLiteral("GB")};
+  double value = static_cast<double>(bytes);
+  qsizetype unit = 0;
+  while (value >= 1024.0 && unit + 1 < units.size()) {
+    value /= 1024.0;
+    ++unit;
+  }
+  if (unit == 0) {
+    return QStringLiteral("%1 B").arg(static_cast<qulonglong>(bytes));
+  }
+  return QStringLiteral("%1 %2").arg(value, 0, 'f', 1).arg(units.at(unit));
+}
+
+int fileProgress(uint64_t transferred, uint64_t fileSize) {
+  if (fileSize == 0) {
+    return 100;
+  }
+  double const ratio = static_cast<double>(transferred) * 100.0 /
+                       static_cast<double>(fileSize);
+  return std::clamp(static_cast<int>(ratio), 0, 100);
+}
+
+QString fileStatusText(QString const &status) {
+  if (status == QStringLiteral("completed")) {
+    return QStringLiteral("已完成");
+  }
+  if (status == QStringLiteral("cancelled")) {
+    return QStringLiteral("已取消");
+  }
+  if (status == QStringLiteral("failed")) {
+    return QStringLiteral("失败");
+  }
+  if (status == QStringLiteral("receiving")) {
+    return QStringLiteral("接收中");
+  }
+  if (status == QStringLiteral("sending")) {
+    return QStringLiteral("发送中");
+  }
+  return QStringLiteral("等待中");
+}
+
+QString fileMessageText(bool isSending, QString const &fileName,
+                        uint64_t fileSize, QString const &status,
+                        int progress) {
+  QString progressText;
+  if (progress >= 0 && status != QStringLiteral("completed") &&
+      status != QStringLiteral("cancelled") && status != QStringLiteral("failed")) {
+    progressText = QStringLiteral(" · %1%").arg(progress);
+  }
+  return QStringLiteral("%1：%2\n%3 · %4%5")
+      .arg(isSending ? QStringLiteral("发送文件") : QStringLiteral("接收文件"),
+           fileName, fileSizeText(fileSize), fileStatusText(status), progressText);
+}
+
+QString fileRecordBody(QString const &fileName, uint64_t fileSize,
+                       QString const &status) {
+  return QStringLiteral("FILE:%1:%2:%3")
+      .arg(fileName)
+      .arg(static_cast<qulonglong>(fileSize))
+      .arg(status);
 }
 
 QString avatarText(QString const &displayName) {
@@ -692,10 +799,206 @@ void AppController::sendMessage(QString const &text) {
   });
 }
 
+void AppController::sendFile(QString const &localFileUrlOrPath) {
+  if (selectedKind_ != ConversationKind::Friend || selectedIdentifier_.isEmpty()) {
+    addNotice(QStringLiteral("file"), QStringLiteral("请先选择一个在线好友。"),
+              QStringLiteral("warning"));
+    return;
+  }
+  if (!tox_) {
+    addNotice(QStringLiteral("file"), QStringLiteral("Tox 尚未就绪，无法发送文件。"),
+              QStringLiteral("warning"));
+    return;
+  }
+
+  uint32_t const friendNumber = numericIdentifier(selectedIdentifier_);
+  if (friendNumber == kInvalidNumber) {
+    addNotice(QStringLiteral("file"), QStringLiteral("占位好友不能发送真实文件。"),
+              QStringLiteral("warning"));
+    return;
+  }
+
+  try {
+    if (tox_->GetFriendConnectionStatus(friendNumber) == TOX_CONNECTION_NONE) {
+      addNotice(QStringLiteral("file"), QStringLiteral("好友离线，无法发送文件。"),
+                QStringLiteral("warning"));
+      return;
+    }
+  } catch (std::exception const &e) {
+    addNotice(QStringLiteral("file"),
+              QStringLiteral("检查好友在线状态失败：%1").arg(QString::fromUtf8(e.what())),
+              QStringLiteral("warning"));
+    return;
+  }
+
+  QString const filePath = localFilePathFromUrl(localFileUrlOrPath);
+  QFileInfo const info(filePath);
+  if (!info.exists() || !info.isFile() || !info.isReadable()) {
+    addNotice(QStringLiteral("file"), QStringLiteral("请选择可读取的本地文件。"),
+              QStringLiteral("warning"));
+    return;
+  }
+
+  QString const fileName = info.fileName();
+  QByteArray const fileNameBytes = fileName.toUtf8();
+  if (fileNameBytes.isEmpty() || fileNameBytes.size() > TOX_MAX_FILENAME_LENGTH) {
+    addNotice(QStringLiteral("file"), QStringLiteral("文件名为空或过长。"),
+              QStringLiteral("warning"));
+    return;
+  }
+  uint64_t const fileSize = static_cast<uint64_t>(std::max<qint64>(0, info.size()));
+  std::string const fileNameUtf8(fileNameBytes.constData(),
+                                 static_cast<size_t>(fileNameBytes.size()));
+
+  uint32_t fileNumber = kInvalidNumber;
+  try {
+    fileNumber = tox_->SendFile(friendNumber,
+                                std::filesystem::path(filePath.toStdString()),
+                                fileNameUtf8);
+  } catch (std::exception const &e) {
+    addNotice(QStringLiteral("file"),
+              QStringLiteral("发起文件传输失败：%1").arg(QString::fromUtf8(e.what())),
+              QStringLiteral("warning"));
+    return;
+  }
+  if (fileNumber == kInvalidNumber) {
+    addNotice(QStringLiteral("file"), QStringLiteral("Tox 未接受文件传输请求。"),
+              QStringLiteral("warning"));
+    return;
+  }
+
+  auto stream = std::make_shared<std::fstream>(filePath.toStdString(),
+                                               std::ios::binary | std::ios::in);
+  if (!stream->is_open()) {
+    tox_->ControlFileTransfer(friendNumber, fileNumber, TOX_FILE_CONTROL_CANCEL);
+    addNotice(QStringLiteral("file"), QStringLiteral("打开待发送文件失败。"),
+              QStringLiteral("warning"));
+    return;
+  }
+
+  QString const messageIdentifier = makeMessageIdentifier();
+  FileTransfer transfer{friendNumber,
+                        fileNumber,
+                        filePath,
+                        fileName,
+                        messageIdentifier,
+                        fileSize,
+                        0,
+                        true,
+                        stream};
+  fileTransfers_.insert(fileTransferKey(friendNumber, fileNumber), transfer);
+  appendMessageToConversation(
+      ConversationKind::Friend, QString::number(friendNumber),
+      {messageIdentifier, QStringLiteral("我"),
+       fileMessageText(true, fileName, fileSize, QStringLiteral("sending"),
+                       fileProgress(0, fileSize)),
+       timestampText(), true, false, QStringLiteral("file"),
+       fileProgress(0, fileSize), QStringLiteral("sending")});
+  addNotice(QStringLiteral("file"), QStringLiteral("文件传输已开始。"));
+}
+
+void AppController::acceptIncomingFile(QString const &localFileUrlOrPath) {
+  if (pendingIncomingFiles_.isEmpty()) {
+    return;
+  }
+  PendingIncomingFile const pending = pendingIncomingFiles_.takeFirst();
+  QString const filePath = localFilePathFromUrl(localFileUrlOrPath);
+  QFileInfo const info(filePath);
+  if (filePath.isEmpty()) {
+    if (tox_) {
+      tox_->ControlFileTransfer(pending.friendNumber, pending.fileNumber,
+                                TOX_FILE_CONTROL_CANCEL);
+    }
+    appendFileRecord(pending.friendNumber, false, pending.fileName,
+                     pending.fileSize, QStringLiteral("cancelled"));
+    promptNextIncomingFile();
+    return;
+  }
+  QDir parentDir(info.absolutePath());
+  if (!parentDir.exists() && !parentDir.mkpath(QStringLiteral("."))) {
+    tox_->ControlFileTransfer(pending.friendNumber, pending.fileNumber,
+                              TOX_FILE_CONTROL_CANCEL);
+    appendFileRecord(pending.friendNumber, false, pending.fileName,
+                     pending.fileSize, QStringLiteral("failed"));
+    addNotice(QStringLiteral("file"), QStringLiteral("创建保存目录失败。"),
+              QStringLiteral("warning"));
+    promptNextIncomingFile();
+    return;
+  }
+
+  auto stream = std::make_shared<std::fstream>(filePath.toStdString(),
+                                               std::ios::binary | std::ios::out |
+                                                   std::ios::trunc);
+  if (!stream->is_open()) {
+    tox_->ControlFileTransfer(pending.friendNumber, pending.fileNumber,
+                              TOX_FILE_CONTROL_CANCEL);
+    appendFileRecord(pending.friendNumber, false, pending.fileName,
+                     pending.fileSize, QStringLiteral("failed"));
+    addNotice(QStringLiteral("file"), QStringLiteral("打开保存文件失败。"),
+              QStringLiteral("warning"));
+    promptNextIncomingFile();
+    return;
+  }
+
+  QString const messageIdentifier = makeMessageIdentifier();
+  FileTransfer transfer{pending.friendNumber,
+                        pending.fileNumber,
+                        filePath,
+                        pending.fileName,
+                        messageIdentifier,
+                        pending.fileSize,
+                        0,
+                        false,
+                        stream};
+  fileTransfers_.insert(fileTransferKey(pending.friendNumber, pending.fileNumber),
+                        transfer);
+  appendMessageToConversation(
+      ConversationKind::Friend, QString::number(pending.friendNumber),
+      {messageIdentifier, friendDisplayName(pending.friendNumber),
+       fileMessageText(false, pending.fileName, pending.fileSize,
+                       QStringLiteral("receiving"), fileProgress(0, pending.fileSize)),
+       timestampText(), false, false, QStringLiteral("file"),
+       fileProgress(0, pending.fileSize), QStringLiteral("receiving")});
+
+  bool const resumed =
+      tox_ && tox_->ControlFileTransfer(pending.friendNumber, pending.fileNumber,
+                                        TOX_FILE_CONTROL_RESUME);
+  if (!resumed) {
+    updateMessageInConversation(ConversationKind::Friend,
+                                QString::number(pending.friendNumber),
+                                messageIdentifier,
+                                fileMessageText(false, pending.fileName,
+                                                pending.fileSize,
+                                                QStringLiteral("failed"), -1),
+                                -1, QStringLiteral("failed"));
+    fileTransfers_.remove(fileTransferKey(pending.friendNumber, pending.fileNumber));
+    saveFileRecord(pending.friendNumber, false, pending.fileName,
+                   pending.fileSize, QStringLiteral("failed"));
+    addNotice(QStringLiteral("file"), QStringLiteral("接受文件传输失败。"),
+              QStringLiteral("warning"));
+  } else {
+    addNotice(QStringLiteral("file"), QStringLiteral("已接受文件传输。"));
+  }
+  promptNextIncomingFile();
+}
+
+void AppController::rejectIncomingFile() {
+  if (pendingIncomingFiles_.isEmpty()) {
+    return;
+  }
+  PendingIncomingFile const pending = pendingIncomingFiles_.takeFirst();
+  if (tox_) {
+    tox_->ControlFileTransfer(pending.friendNumber, pending.fileNumber,
+                              TOX_FILE_CONTROL_CANCEL);
+  }
+  appendFileRecord(pending.friendNumber, false, pending.fileName, pending.fileSize,
+                   QStringLiteral("cancelled"));
+  addNotice(QStringLiteral("file"), QStringLiteral("已拒绝文件传输。"));
+  promptNextIncomingFile();
+}
+
 void AppController::sendFileStub() {
-  addNotice(QStringLiteral("file"),
-            fileTransferService_.placeholderSend(currentConversationTitle()));
-  appendCurrentSystemMessage(QStringLiteral("文件发送占位流程已触发。"));
+  addNotice(QStringLiteral("file"), QStringLiteral("请选择文件后发送。"));
 }
 
 void AppController::startAudioCall() {
@@ -785,6 +1088,8 @@ bool AppController::startTox() {
   groupUnreadCount_.clear();
   friendConnectionCache_.clear();
   friendPublicKeyCache_.clear();
+  fileTransfers_.clear();
+  pendingIncomingFiles_.clear();
   emit pendingFriendRequestChanged();
   selfConnection_ = TOX_CONNECTION_NONE;
   networkStatus_ = QStringLiteral("network: starting");
@@ -901,6 +1206,24 @@ void AppController::registerToxCallbacks() {
     }
     addNotice(QStringLiteral("friend"),
               QStringLiteral("message from %1").arg(friendDisplayName(friendNumber)));
+  });
+
+  tox_->SetOnFileReceive([this](uint32_t friendNumber, uint32_t fileNumber,
+                                std::string const &fileName, uint64_t fileSize) {
+    onFileReceive(friendNumber, fileNumber, fileName, fileSize);
+  });
+  tox_->SetOnFileRecvControl([this](uint32_t friendNumber, uint32_t fileNumber,
+                                    TOX_FILE_CONTROL control) {
+    onFileRecvControl(friendNumber, fileNumber, control);
+  });
+  tox_->SetOnFileChunkRequest([this](uint32_t friendNumber, uint32_t fileNumber,
+                                     uint64_t position, size_t length) {
+    onFileChunkRequest(friendNumber, fileNumber, position, length);
+  });
+  tox_->SetOnFileRecvChunk([this](uint32_t friendNumber, uint32_t fileNumber,
+                                  uint64_t position, uint8_t const *data,
+                                  size_t length) {
+    onFileRecvChunk(friendNumber, fileNumber, position, data, length);
   });
 
   tox_->SetOnConferenceInvite([this](uint32_t friendNumber, TOX_CONFERENCE_TYPE,
@@ -1068,7 +1391,17 @@ void AppController::selectConversation(ConversationKind kind,
 
 void AppController::loadSelectedConversation() {
   QString const key = conversationKey(selectedKind_, selectedIdentifier_);
-  chatModel_.setMessages(chatHistory_.value(key));
+  QVector<ChatMessageItem> messages = chatHistory_.value(key);
+  if (messages.isEmpty() && selectedKind_ == ConversationKind::Friend) {
+    uint32_t const friendNumber = numericIdentifier(selectedIdentifier_);
+    if (friendNumber != kInvalidNumber) {
+      loadPersistedFileRecords(friendNumber, messages);
+      if (!messages.isEmpty()) {
+        chatHistory_.insert(key, messages);
+      }
+    }
+  }
+  chatModel_.setMessages(messages);
 }
 
 void AppController::appendMessageToConversation(ConversationKind kind,
@@ -1081,6 +1414,26 @@ void AppController::appendMessageToConversation(ConversationKind kind,
   }
 }
 
+void AppController::updateMessageInConversation(
+    ConversationKind kind, QString const &identifier,
+    QString const &messageIdentifier, QString const &text, int progress,
+    QString const &deliveryState) {
+  QString const key = conversationKey(kind, identifier);
+  QVector<ChatMessageItem> &messages = chatHistory_[key];
+  for (ChatMessageItem &message: messages) {
+    if (message.identifier != messageIdentifier) {
+      continue;
+    }
+    message.text = text;
+    message.progress = progress;
+    message.deliveryState = deliveryState;
+    break;
+  }
+  if (selectedKind_ == kind && selectedIdentifier_ == identifier) {
+    chatModel_.updateMessage(messageIdentifier, text, progress, deliveryState);
+  }
+}
+
 void AppController::appendCurrentSystemMessage(QString const &text,
                                                QString const &severity) {
   if (selectedKind_ == ConversationKind::None) {
@@ -1090,6 +1443,281 @@ void AppController::appendCurrentSystemMessage(QString const &text,
       selectedKind_, selectedIdentifier_,
       {makeMessageIdentifier(), QStringLiteral("system"), text, timestampText(),
        false, true, severity, -1, QStringLiteral("local")});
+}
+
+void AppController::appendFileRecord(uint32_t friendNumber, bool isSending,
+                                     QString const &fileName, uint64_t fileSize,
+                                     QString const &status, bool saveToDb) {
+  int const progress = status == QStringLiteral("completed") ? 100 : -1;
+  appendMessageToConversation(
+      ConversationKind::Friend, QString::number(friendNumber),
+      {makeMessageIdentifier(),
+       isSending ? QStringLiteral("我") : friendDisplayName(friendNumber),
+       fileMessageText(isSending, fileName, fileSize, status, progress),
+       timestampText(), isSending, false, QStringLiteral("file"), progress,
+       status});
+
+  if (saveToDb) {
+    saveFileRecord(friendNumber, isSending, fileName, fileSize, status);
+  }
+}
+
+void AppController::saveFileRecord(uint32_t friendNumber, bool isSending,
+                                   QString const &fileName, uint64_t fileSize,
+                                   QString const &status) {
+  QString const publicKey = friendPublicKey(friendNumber);
+  if (publicKey.isEmpty()) {
+    return;
+  }
+  storageService_.saveFriendMessage(
+      publicKey, isSending ? 1 : 0, kFileRecordMessageType,
+      fileRecordBody(fileName, fileSize, status),
+      QDateTime::currentMSecsSinceEpoch());
+}
+
+void AppController::updateFileTransferMessage(FileTransfer const &transfer,
+                                              QString const &status,
+                                              QString const &deliveryState) {
+  int const progress = status == QStringLiteral("completed")
+                           ? 100
+                           : fileProgress(transfer.transferred, transfer.fileSize);
+  updateMessageInConversation(
+      ConversationKind::Friend, QString::number(transfer.friendNumber),
+      transfer.messageIdentifier,
+      fileMessageText(transfer.isSending, transfer.fileName, transfer.fileSize,
+                      status, progress),
+      progress, deliveryState);
+}
+
+void AppController::loadPersistedFileRecords(
+    uint32_t friendNumber, QVector<ChatMessageItem> &messages) {
+  QString const publicKey = friendPublicKey(friendNumber);
+  if (publicKey.isEmpty()) {
+    return;
+  }
+  for (Persistence::SqliteStorage::MessageRow const &row:
+       storageService_.loadRecentFriendMessages(publicKey, 200)) {
+    if (row.toxMessageType != kFileRecordMessageType ||
+        !row.body.startsWith(QStringLiteral("FILE:"))) {
+      continue;
+    }
+    QString const body = row.body.mid(5);
+    int const statusSeparator = body.lastIndexOf(QChar(':'));
+    int const sizeSeparator =
+        statusSeparator > 0 ? body.lastIndexOf(QChar(':'), statusSeparator - 1) : -1;
+    if (sizeSeparator <= 0 || statusSeparator <= sizeSeparator) {
+      continue;
+    }
+    bool ok = false;
+    QString const fileName = body.left(sizeSeparator);
+    uint64_t const fileSize = body.mid(sizeSeparator + 1,
+                                       statusSeparator - sizeSeparator - 1)
+                                  .toULongLong(&ok);
+    QString const status = body.mid(statusSeparator + 1);
+    if (!ok || fileName.isEmpty()) {
+      continue;
+    }
+    bool const isSending = row.direction == 1;
+    int const progress = status == QStringLiteral("completed") ? 100 : -1;
+    messages.push_back({makeMessageIdentifier(),
+                        isSending ? QStringLiteral("我")
+                                  : friendDisplayName(friendNumber),
+                        fileMessageText(isSending, fileName, fileSize, status,
+                                        progress),
+                        timestampText(row.createdAtMs),
+                        isSending,
+                        false,
+                        QStringLiteral("file"),
+                        progress,
+                        status});
+  }
+}
+
+void AppController::onFileReceive(uint32_t friendNumber, uint32_t fileNumber,
+                                  std::string const &fileName,
+                                  uint64_t fileSize) {
+  QString const safeName = safeFileName(fromUtf8(fileName));
+  pendingIncomingFiles_.push_back({friendNumber, fileNumber, safeName, fileSize});
+  addNotice(QStringLiteral("file"),
+            QStringLiteral("收到来自 %1 的文件：%2")
+                .arg(friendDisplayName(friendNumber), safeName));
+  if (pendingIncomingFiles_.size() == 1) {
+    promptNextIncomingFile();
+  }
+}
+
+void AppController::onFileRecvControl(uint32_t friendNumber, uint32_t fileNumber,
+                                      TOX_FILE_CONTROL control) {
+  QString const key = fileTransferKey(friendNumber, fileNumber);
+  auto transferIt = fileTransfers_.find(key);
+  if (transferIt == fileTransfers_.end()) {
+    if (control == TOX_FILE_CONTROL_CANCEL) {
+      for (qsizetype i = 0; i < pendingIncomingFiles_.size(); ++i) {
+        PendingIncomingFile const &pending = pendingIncomingFiles_.at(i);
+        if (pending.friendNumber == friendNumber && pending.fileNumber == fileNumber) {
+          pendingIncomingFiles_.removeAt(i);
+          addNotice(QStringLiteral("file"), QStringLiteral("对方已取消文件传输。"));
+          promptNextIncomingFile();
+          return;
+        }
+      }
+    }
+    return;
+  }
+  FileTransfer &transfer = transferIt.value();
+  if (control == TOX_FILE_CONTROL_CANCEL) {
+    updateMessageInConversation(
+        ConversationKind::Friend, QString::number(friendNumber),
+        transfer.messageIdentifier,
+        fileMessageText(transfer.isSending, transfer.fileName, transfer.fileSize,
+                        QStringLiteral("cancelled"), -1),
+        -1, QStringLiteral("cancelled"));
+    if (transfer.fileStream) {
+      transfer.fileStream->close();
+    }
+    saveFileRecord(friendNumber, transfer.isSending, transfer.fileName,
+                   transfer.fileSize, QStringLiteral("cancelled"));
+    fileTransfers_.remove(key);
+    addNotice(QStringLiteral("file"), QStringLiteral("文件传输已取消。"));
+    return;
+  }
+  if (control == TOX_FILE_CONTROL_PAUSE) {
+    updateFileTransferMessage(transfer, QStringLiteral("queued"),
+                              QStringLiteral("queued"));
+    return;
+  }
+  if (control == TOX_FILE_CONTROL_RESUME) {
+    updateFileTransferMessage(
+        transfer, transfer.isSending ? QStringLiteral("sending")
+                                     : QStringLiteral("receiving"),
+        transfer.isSending ? QStringLiteral("sending")
+                           : QStringLiteral("receiving"));
+  }
+}
+
+void AppController::onFileChunkRequest(uint32_t friendNumber, uint32_t fileNumber,
+                                       uint64_t position, size_t length) {
+  QString const key = fileTransferKey(friendNumber, fileNumber);
+  auto transferIt = fileTransfers_.find(key);
+  if (transferIt == fileTransfers_.end()) {
+    return;
+  }
+  FileTransfer &transfer = transferIt.value();
+  if (length == 0) {
+    transfer.transferred = transfer.fileSize;
+    updateFileTransferMessage(transfer, QStringLiteral("completed"),
+                              QStringLiteral("completed"));
+    if (transfer.fileStream) {
+      transfer.fileStream->close();
+    }
+    saveFileRecord(friendNumber, true, transfer.fileName, transfer.fileSize,
+                   QStringLiteral("completed"));
+    fileTransfers_.remove(key);
+    addNotice(QStringLiteral("file"), QStringLiteral("文件发送完成。"));
+    return;
+  }
+  if (!transfer.fileStream || !transfer.fileStream->is_open()) {
+    tox_->ControlFileTransfer(friendNumber, fileNumber, TOX_FILE_CONTROL_CANCEL);
+    updateFileTransferMessage(transfer, QStringLiteral("failed"),
+                              QStringLiteral("failed"));
+    saveFileRecord(friendNumber, true, transfer.fileName, transfer.fileSize,
+                   QStringLiteral("failed"));
+    fileTransfers_.remove(key);
+    return;
+  }
+
+  std::vector<uint8_t> buffer(length);
+  transfer.fileStream->seekg(static_cast<std::streamoff>(position));
+  transfer.fileStream->read(reinterpret_cast<char *>(buffer.data()),
+                            static_cast<std::streamsize>(length));
+  std::streamsize const bytesRead = transfer.fileStream->gcount();
+  if (bytesRead <= 0) {
+    tox_->ControlFileTransfer(friendNumber, fileNumber, TOX_FILE_CONTROL_CANCEL);
+    updateFileTransferMessage(transfer, QStringLiteral("failed"),
+                              QStringLiteral("failed"));
+    saveFileRecord(friendNumber, true, transfer.fileName, transfer.fileSize,
+                   QStringLiteral("failed"));
+    fileTransfers_.remove(key);
+    return;
+  }
+
+  if (!tox_->SendFileChunk(friendNumber, fileNumber, position, buffer.data(),
+                           static_cast<size_t>(bytesRead))) {
+    tox_->ControlFileTransfer(friendNumber, fileNumber, TOX_FILE_CONTROL_CANCEL);
+    updateFileTransferMessage(transfer, QStringLiteral("failed"),
+                              QStringLiteral("failed"));
+    saveFileRecord(friendNumber, true, transfer.fileName, transfer.fileSize,
+                   QStringLiteral("failed"));
+    fileTransfers_.remove(key);
+    return;
+  }
+  transfer.transferred = std::min<uint64_t>(
+      transfer.fileSize, std::max<uint64_t>(transfer.transferred,
+                                            position + static_cast<uint64_t>(bytesRead)));
+  updateFileTransferMessage(transfer, QStringLiteral("sending"),
+                            QStringLiteral("sending"));
+}
+
+void AppController::onFileRecvChunk(uint32_t friendNumber, uint32_t fileNumber,
+                                    uint64_t position, uint8_t const *data,
+                                    size_t length) {
+  QString const key = fileTransferKey(friendNumber, fileNumber);
+  auto transferIt = fileTransfers_.find(key);
+  if (transferIt == fileTransfers_.end()) {
+    return;
+  }
+  FileTransfer &transfer = transferIt.value();
+  if (length == 0) {
+    transfer.transferred = transfer.fileSize;
+    updateFileTransferMessage(transfer, QStringLiteral("completed"),
+                              QStringLiteral("completed"));
+    if (transfer.fileStream) {
+      transfer.fileStream->close();
+    }
+    saveFileRecord(friendNumber, false, transfer.fileName, transfer.fileSize,
+                   QStringLiteral("completed"));
+    fileTransfers_.remove(key);
+    addNotice(QStringLiteral("file"), QStringLiteral("文件接收完成。"));
+    return;
+  }
+  if (!transfer.fileStream || !transfer.fileStream->is_open() || !data) {
+    tox_->ControlFileTransfer(friendNumber, fileNumber, TOX_FILE_CONTROL_CANCEL);
+    updateFileTransferMessage(transfer, QStringLiteral("failed"),
+                              QStringLiteral("failed"));
+    saveFileRecord(friendNumber, false, transfer.fileName, transfer.fileSize,
+                   QStringLiteral("failed"));
+    fileTransfers_.remove(key);
+    return;
+  }
+
+  transfer.fileStream->seekp(static_cast<std::streamoff>(position));
+  transfer.fileStream->write(reinterpret_cast<char const *>(data),
+                             static_cast<std::streamsize>(length));
+  transfer.fileStream->flush();
+  if (!transfer.fileStream->good()) {
+    tox_->ControlFileTransfer(friendNumber, fileNumber, TOX_FILE_CONTROL_CANCEL);
+    updateFileTransferMessage(transfer, QStringLiteral("failed"),
+                              QStringLiteral("failed"));
+    saveFileRecord(friendNumber, false, transfer.fileName, transfer.fileSize,
+                   QStringLiteral("failed"));
+    fileTransfers_.remove(key);
+    return;
+  }
+  transfer.transferred = std::min<uint64_t>(
+      transfer.fileSize,
+      std::max<uint64_t>(transfer.transferred, position + static_cast<uint64_t>(length)));
+  updateFileTransferMessage(transfer, QStringLiteral("receiving"),
+                            QStringLiteral("receiving"));
+}
+
+void AppController::promptNextIncomingFile() {
+  if (pendingIncomingFiles_.isEmpty()) {
+    return;
+  }
+  PendingIncomingFile const &pending = pendingIncomingFiles_.first();
+  emit incomingFileSaveRequested(
+      friendDisplayName(pending.friendNumber), pending.fileName,
+      fileSizeText(pending.fileSize), suggestedReceivedFileUrl(pending.fileName));
 }
 
 QString AppController::conversationKey(ConversationKind kind,

@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Controls.Material
+import QtQuick.Dialogs
 import QtQuick.Layouts
 import "components"
 import "dialogs"
@@ -14,6 +15,10 @@ ApplicationWindow {
     minimumHeight: 580
     visible: true
     title: "IM"
+    property string incomingFileSender: ""
+    property string incomingFileName: ""
+    property string incomingFileSizeText: ""
+    property url incomingFileSuggestedUrl: ""
 
     Theme {
         id: theme
@@ -53,7 +58,25 @@ ApplicationWindow {
         }
         onAudioCallRequested: appController.startAudioCall()
         onVideoCallRequested: appController.startVideoCall()
-        onFileRequested: appController.sendFileStub()
+        onFileRequested: sendFileDialog.open()
+    }
+
+    FileDialog {
+        id: sendFileDialog
+        title: "选择要发送的文件"
+        fileMode: FileDialog.OpenFile
+        onAccepted: appController.sendFile(selectedFile.toString())
+    }
+
+    FileDialog {
+        id: incomingFileDialog
+        title: root.incomingFileName.length > 0
+               ? "保存来自 " + root.incomingFileSender + " 的文件：" + root.incomingFileName
+               : "保存收到的文件"
+        fileMode: FileDialog.SaveFile
+        currentFile: root.incomingFileSuggestedUrl
+        onAccepted: appController.acceptIncomingFile(selectedFile.toString())
+        onRejected: appController.rejectIncomingFile()
     }
 
     AddFriendDialog {
@@ -114,6 +137,13 @@ ApplicationWindow {
             if (appController.hasPendingFriendRequest && !incomingFriendRequestDialog.visible) {
                 incomingFriendRequestDialog.open()
             }
+        }
+        function onIncomingFileSaveRequested(senderName, fileName, fileSizeText, suggestedFileUrl) {
+            root.incomingFileSender = senderName
+            root.incomingFileName = fileName
+            root.incomingFileSizeText = fileSizeText
+            root.incomingFileSuggestedUrl = suggestedFileUrl
+            Qt.callLater(incomingFileDialog.open)
         }
     }
 }

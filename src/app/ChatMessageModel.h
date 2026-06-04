@@ -43,6 +43,8 @@ class ChatMessageModel final : public QAbstractListModel {
 
   void setMessages(QVector<ChatMessageItem> messages);
   void appendMessage(ChatMessageItem message);
+  bool updateMessage(QString const &identifier, QString const &text, int progress,
+                     QString const &deliveryState);
   QVector<ChatMessageItem> messages() const;
   void clear();
 

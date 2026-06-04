@@ -50,7 +50,7 @@ Item {
                     font.pixelSize: 11
                 }
                 Label {
-                    text: root.deliveryState === "sent" ? "" : root.deliveryState
+                    text: root.messageType === "file" || root.deliveryState === "sent" ? "" : root.deliveryState
                     color: root.deliveryState === "failed" ? theme.danger : theme.warning
                     font.pixelSize: 11
                 }
@@ -63,6 +63,15 @@ Item {
                 color: theme.text
                 wrapMode: Text.Wrap
                 horizontalAlignment: root.system ? Text.AlignHCenter : Text.AlignLeft
+            }
+
+            ProgressBar {
+                width: parent.width
+                from: 0
+                to: 100
+                value: root.progress
+                visible: root.messageType === "file" && root.progress >= 0 && root.progress < 100
+                         && root.deliveryState !== "failed" && root.deliveryState !== "cancelled"
             }
         }
     }

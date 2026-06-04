@@ -2,8 +2,10 @@
 #include <persistence/SqliteStorage.h>
 #include <QByteArray>
 #include <QHash>
+#include <QList>
 #include <QString>
 #include <QStringList>
+#include <QtGlobal>
 #include <QVector>
 
 struct ProfileResult {
@@ -45,6 +47,11 @@ class StorageService final {
   void ensureContact(QString const &publicKey) const;
   QString contactNickname(QString const &publicKey) const;
   void setContactNickname(QString const &publicKey, QString const &nickname) const;
+  void saveFriendMessage(QString const &friendPublicKey, int direction,
+                         int toxMessageType, QString const &body,
+                         qint64 createdAtMs) const;
+  QList<Persistence::SqliteStorage::MessageRow> loadRecentFriendMessages(
+      QString const &friendPublicKey, int limit) const;
   QString themePreference() const;
   void saveThemePreference(QString const &theme);
 

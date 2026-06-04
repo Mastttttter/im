@@ -310,6 +310,34 @@ void StorageService::setContactNickname(QString const &publicKey,
   } catch (...) {}
 }
 
+void StorageService::saveFriendMessage(QString const &friendPublicKey,
+                                       int direction, int toxMessageType,
+                                       QString const &body,
+                                       qint64 createdAtMs) const {
+  QString const key = friendPublicKey.trimmed();
+  if (!store_.IsOpen() || key.isEmpty() || body.isEmpty()) {
+    return;
+  }
+  try {
+    store_.EnsureContact(key, createdAtMs);
+    store_.InsertMessage(key, direction, toxMessageType, body, createdAtMs);
+  } catch (...) {}
+}
+
+QList<Persistence::SqliteStorage::MessageRow>
+StorageService::loadRecentFriendMessages(QString const &friendPublicKey,
+                                         int limit) const {
+  QString const key = friendPublicKey.trimmed();
+  if (!store_.IsOpen() || key.isEmpty()) {
+    return {};
+  }
+  try {
+    return store_.LoadRecentMessages(key, limit);
+  } catch (...) {
+    return {};
+  }
+}
+
 QString StorageService::themePreference() const {
   QSettings settings;
   return settings.value(QStringLiteral("ui/theme"), QStringLiteral("dark"))

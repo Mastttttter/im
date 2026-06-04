@@ -57,6 +57,25 @@ void ChatMessageModel::appendMessage(ChatMessageItem message) {
   endInsertRows();
 }
 
+bool ChatMessageModel::updateMessage(QString const &identifier, QString const &text,
+                                     int progress,
+                                     QString const &deliveryState) {
+  for (qsizetype i = 0; i < messages_.size(); ++i) {
+    ChatMessageItem &message = messages_[i];
+    if (message.identifier != identifier) {
+      continue;
+    }
+    message.text = text;
+    message.progress = progress;
+    message.deliveryState = deliveryState;
+    QModelIndex const changed = index(static_cast<int>(i), 0);
+    emit dataChanged(changed, changed,
+                     {TextRole, ProgressRole, DeliveryStateRole});
+    return true;
+  }
+  return false;
+}
+
 QVector<ChatMessageItem> ChatMessageModel::messages() const { return messages_; }
 
 void ChatMessageModel::clear() {

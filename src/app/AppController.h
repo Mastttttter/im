@@ -13,6 +13,8 @@
 #include <QTimer>
 #include <QVector>
 #include <cstdint>
+#include <fstream>
+#include <limits>
 #include <memory>
 
 class AppController final : public QObject {
@@ -97,6 +99,9 @@ class AppController final : public QObject {
   Q_INVOKABLE void inviteSelectedFriendToGroup();
   Q_INVOKABLE void leaveSelectedGroup();
   Q_INVOKABLE void sendMessage(QString const &text);
+  Q_INVOKABLE void sendFile(QString const &localFileUrlOrPath);
+  Q_INVOKABLE void acceptIncomingFile(QString const &localFileUrlOrPath);
+  Q_INVOKABLE void rejectIncomingFile();
   Q_INVOKABLE void sendFileStub();
   Q_INVOKABLE void startAudioCall();
   Q_INVOKABLE void startVideoCall();
@@ -116,6 +121,9 @@ class AppController final : public QObject {
   void selectedConversationChanged();
   void pendingFriendRequestChanged();
   void friendRequestPromptRequested();
+  void incomingFileSaveRequested(QString senderName, QString fileName,
+                                 QString fileSizeText,
+                                 QString suggestedFileUrl);
   void callStateChanged();
   void callShellRequested();
 
@@ -128,6 +136,23 @@ class AppController final : public QObject {
   struct PendingFriendRequest {
     QString publicKey;
     QString message;
+  };
+  struct FileTransfer {
+    uint32_t friendNumber{std::numeric_limits<uint32_t>::max()};
+    uint32_t fileNumber{std::numeric_limits<uint32_t>::max()};
+    QString filePath;
+    QString fileName;
+    QString messageIdentifier;
+    uint64_t fileSize{0};
+    uint64_t transferred{0};
+    bool isSending{false};
+    std::shared_ptr<std::fstream> fileStream;
+  };
+  struct PendingIncomingFile {
+    uint32_t friendNumber{std::numeric_limits<uint32_t>::max()};
+    uint32_t fileNumber{std::numeric_limits<uint32_t>::max()};
+    QString fileName;
+    uint64_t fileSize{0};
   };
 
   bool startTox();
@@ -145,8 +170,33 @@ class AppController final : public QObject {
   void loadSelectedConversation();
   void appendMessageToConversation(ConversationKind kind, QString const &identifier,
                                    ChatMessageItem message);
+  void updateMessageInConversation(ConversationKind kind,
+                                   QString const &identifier,
+                                   QString const &messageIdentifier,
+                                   QString const &text, int progress,
+                                   QString const &deliveryState);
   void appendCurrentSystemMessage(QString const &text,
                                   QString const &severity = QStringLiteral("info"));
+  void appendFileRecord(uint32_t friendNumber, bool isSending,
+                        QString const &fileName, uint64_t fileSize,
+                        QString const &status, bool saveToDb = true);
+  void saveFileRecord(uint32_t friendNumber, bool isSending,
+                      QString const &fileName, uint64_t fileSize,
+                      QString const &status);
+  void updateFileTransferMessage(FileTransfer const &transfer,
+                                 QString const &status,
+                                 QString const &deliveryState);
+  void loadPersistedFileRecords(uint32_t friendNumber,
+                                QVector<ChatMessageItem> &messages);
+  void onFileReceive(uint32_t friendNumber, uint32_t fileNumber,
+                     std::string const &fileName, uint64_t fileSize);
+  void onFileRecvControl(uint32_t friendNumber, uint32_t fileNumber,
+                         TOX_FILE_CONTROL control);
+  void onFileChunkRequest(uint32_t friendNumber, uint32_t fileNumber,
+                          uint64_t position, size_t length);
+  void onFileRecvChunk(uint32_t friendNumber, uint32_t fileNumber,
+                       uint64_t position, uint8_t const *data, size_t length);
+  void promptNextIncomingFile();
   QString conversationKey(ConversationKind kind, QString const &identifier) const;
   QString conversationKindText(ConversationKind kind) const;
   QString currentConversationTitle() const;
@@ -205,6 +255,8 @@ class AppController final : public QObject {
   QHash<QString, ContactItem> stubFriends_;
   QHash<QString, ContactItem> stubGroups_;
   QHash<QString, QVector<ChatMessageItem>> chatHistory_;
+  QHash<QString, FileTransfer> fileTransfers_;
+  QVector<PendingIncomingFile> pendingIncomingFiles_;
 
   TOX_CONNECTION selfConnection_{TOX_CONNECTION_NONE};
   uint64_t messageSequence_{0};
