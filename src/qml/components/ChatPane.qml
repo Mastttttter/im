@@ -29,8 +29,8 @@ Rectangle {
                 Layout.fillWidth: true
             }
             Button { text: "发送文件"; onClicked: root.fileRequested() }
-            Button { text: "音频通话"; onClicked: root.audioCallRequested() }
-            Button { text: "视频通话"; onClicked: root.videoCallRequested() }
+            Button { text: "音频通话"; enabled: controller.hasSelectedFriend; onClicked: root.audioCallRequested() }
+            Button { text: "视频通话"; enabled: controller.hasSelectedFriend; onClicked: root.videoCallRequested() }
         }
 
         Rectangle {

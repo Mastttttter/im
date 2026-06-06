@@ -4,8 +4,12 @@
 #include "app/ChatMessageModel.h"
 #include "app/ContactListModel.h"
 #include "app/NoticeModel.h"
+#include "audio/AudioManager.h"
+#include "core/CallConfig.h"
 #include "core/ToxCoreWrapper.h"
+#include "video/VideoManager.h"
 
+#include <QElapsedTimer>
 #include <QObject>
 #include <QHash>
 #include <QString>
@@ -16,6 +20,7 @@
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <vector>
 
 class AppController final : public QObject {
   Q_OBJECT
@@ -38,6 +43,8 @@ class AppController final : public QObject {
   Q_PROPERTY(QString selectedFriendDisplayName READ selectedFriendDisplayName NOTIFY selectedConversationChanged)
   Q_PROPERTY(QString selectedFriendRemark READ selectedFriendRemark NOTIFY selectedConversationChanged)
   Q_PROPERTY(bool callActive READ callActive NOTIFY callStateChanged)
+  Q_PROPERTY(bool callIncoming READ callIncoming NOTIFY callStateChanged)
+  Q_PROPERTY(bool callCanAnswer READ callCanAnswer NOTIFY callStateChanged)
   Q_PROPERTY(bool callVideoEnabled READ callVideoEnabled NOTIFY callStateChanged)
   Q_PROPERTY(QString callTitle READ callTitle NOTIFY callStateChanged)
   Q_PROPERTY(QString callStatus READ callStatus NOTIFY callStateChanged)
@@ -65,6 +72,8 @@ class AppController final : public QObject {
   QString selectedFriendDisplayName() const;
   QString selectedFriendRemark() const;
   bool callActive() const;
+  bool callIncoming() const;
+  bool callCanAnswer() const;
   bool callVideoEnabled() const;
   QString callTitle() const;
   QString callStatus() const;
@@ -107,6 +116,8 @@ class AppController final : public QObject {
   Q_INVOKABLE void startVideoCall();
   Q_INVOKABLE void answerCall();
   Q_INVOKABLE void hangupCall();
+  Q_INVOKABLE void setLocalVideoSink(QObject *sink);
+  Q_INVOKABLE void setRemoteVideoSink(QObject *sink);
 
   signals:
   void loggedInChanged();
@@ -133,6 +144,7 @@ class AppController final : public QObject {
 
   private:
   enum class ConversationKind { None, Friend, Group, Assistant };
+  enum class CallPhase { Idle, OutgoingRinging, IncomingRinging, Active, Ending };
   struct PendingFriendRequest {
     QString publicKey;
     QString message;
@@ -183,11 +195,16 @@ class AppController final : public QObject {
   void saveFileRecord(uint32_t friendNumber, bool isSending,
                       QString const &fileName, uint64_t fileSize,
                       QString const &status);
+  void appendCallRecord(uint32_t friendNumber, bool videoEnabled,
+                        QString const &statusKey, int durationSeconds = -1,
+                        bool saveToDb = true);
+  void saveCallRecord(uint32_t friendNumber, bool videoEnabled,
+                      QString const &statusKey, int durationSeconds);
   void updateFileTransferMessage(FileTransfer const &transfer,
                                  QString const &status,
                                  QString const &deliveryState);
-  void loadPersistedFileRecords(uint32_t friendNumber,
-                                QVector<ChatMessageItem> &messages);
+  void loadPersistedFriendRecords(uint32_t friendNumber,
+                                  QVector<ChatMessageItem> &messages);
   void onFileReceive(uint32_t friendNumber, uint32_t fileNumber,
                      std::string const &fileName, uint64_t fileSize);
   void onFileRecvControl(uint32_t friendNumber, uint32_t fileNumber,
@@ -196,6 +213,21 @@ class AppController final : public QObject {
                           uint64_t position, size_t length);
   void onFileRecvChunk(uint32_t friendNumber, uint32_t fileNumber,
                        uint64_t position, uint8_t const *data, size_t length);
+  void onIncomingCall(uint32_t friendNumber, bool audioEnabled, bool videoEnabled);
+  void onCallState(uint32_t friendNumber, TOXAV_FRIEND_CALL_STATE state);
+  void onAudioFrame(uint32_t friendNumber, int16_t const *pcm, size_t samples,
+                    uint8_t channels, uint32_t samplingRate);
+  void onVideoFrame(uint32_t friendNumber, uint16_t width, uint16_t height,
+                    uint8_t const *y, uint8_t const *u, uint8_t const *v);
+  void beginOutgoingCall(bool videoEnabled);
+  void configureCallMedia();
+  ToxCore::CallOptions callOptions(bool videoEnabled) const;
+  void markCallActive();
+  void finishCallFromRemote(bool error);
+  void resetCallState();
+  void cleanupCallMedia();
+  int currentCallDurationSeconds() const;
+  void sendActiveCallMedia();
   void promptNextIncomingFile();
   QString conversationKey(ConversationKind kind, QString const &identifier) const;
   QString conversationKindText(ConversationKind kind) const;
@@ -242,10 +274,24 @@ class AppController final : public QObject {
   QString selectedIdentifier_;
   QString selectedTitle_{QStringLiteral("未选择会话")};
 
-  bool callActive_{false};
+  CallPhase callPhase_{CallPhase::Idle};
+  uint32_t currentCallFriend_{std::numeric_limits<uint32_t>::max()};
+  bool currentCallOutgoing_{false};
   bool callVideoEnabled_{false};
+  bool localHangupPending_{false};
+  bool callRecordWritten_{false};
+  qint64 callAnsweredAtMs_{0};
   QString callTitle_;
   QString callStatus_;
+  std::unique_ptr<AudioManager> audio_;
+  std::unique_ptr<VideoManager> video_;
+  AppConfig::AvCallConfig avConfig_;
+  ToxCore::AudioFrameParams audioFrameParams_;
+  int audioFrameSamplesPerChannel_{960};
+  std::vector<int16_t> audioSendBuffer_;
+  std::vector<uint8_t> audioCaptureBuffer_;
+  QElapsedTimer videoSendTimer_;
+  int videoSendIntervalMs_{0};
 
   QHash<uint32_t, int> friendUnreadCount_;
   QHash<uint32_t, int> groupUnreadCount_;

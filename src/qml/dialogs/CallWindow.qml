@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtMultimedia
 
 Dialog {
     id: root
@@ -25,18 +26,32 @@ Dialog {
         return (minutes < 10 ? "0" : "") + minutes + ":" + (seconds < 10 ? "0" : "") + seconds
     }
 
+    function callIsConnected() {
+        return controller.callStatus === "通话中" || controller.callStatus === "视频通话中"
+    }
+
     onOpened: {
         durationSeconds = 0
         durationTimer.restart()
+        Qt.callLater(function() {
+            if (callContent.item && callContent.item.attachVideoSinks)
+                callContent.item.attachVideoSinks()
+        })
     }
-    onClosed: durationTimer.stop()
+    onClosed: {
+        durationTimer.stop()
+        if (controller.callActive)
+            controller.hangupCall()
+        controller.setLocalVideoSink(null)
+        controller.setRemoteVideoSink(null)
+    }
 
     Timer {
         id: durationTimer
         interval: 1000
         repeat: true
         running: false
-        onTriggered: if (controller.callStatus === "通话中") durationSeconds += 1
+        onTriggered: if (root.callIsConnected()) durationSeconds += 1
     }
 
     Connections {
@@ -48,8 +63,13 @@ Dialog {
     }
 
     Loader {
+        id: callContent
         anchors.fill: parent
         sourceComponent: controller.callVideoEnabled ? videoCall : audioCall
+        onLoaded: Qt.callLater(function() {
+            if (callContent.item && callContent.item.attachVideoSinks)
+                callContent.item.attachVideoSinks()
+        })
     }
 
     Component {
@@ -84,12 +104,12 @@ Dialog {
                 Layout.fillWidth: true
                 Button {
                     text: "接听"
-                    visible: controller.callStatus !== "通话中"
+                    visible: controller.callCanAnswer
                     Layout.fillWidth: true
                     onClicked: controller.answerCall()
                 }
                 Button {
-                    text: "挂断"
+                    text: controller.callCanAnswer ? "拒绝" : "挂断"
                     Layout.fillWidth: true
                     onClicked: controller.hangupCall()
                 }
@@ -101,6 +121,12 @@ Dialog {
         id: videoCall
         Item {
             anchors.fill: parent
+
+            function attachVideoSinks() {
+                controller.setRemoteVideoSink(remoteVideo.videoSink)
+                controller.setLocalVideoSink(localPreview.videoSink)
+            }
+
             Rectangle {
                 anchors.left: parent.left
                 anchors.right: parent.right
@@ -108,7 +134,21 @@ Dialog {
                 height: parent.height - 60
                 color: "#0a0a14"
                 border.color: theme.border
-                Label { anchors.centerIn: parent; text: "等待对方视频..."; color: theme.muted }
+
+                VideoOutput {
+                    id: remoteVideo
+                    anchors.fill: parent
+                    fillMode: VideoOutput.PreserveAspectFit
+                    Component.onCompleted: controller.setRemoteVideoSink(videoSink)
+                }
+
+                Label {
+                    anchors.centerIn: parent
+                    text: controller.callStatus
+                    color: theme.muted
+                    visible: !root.callIsConnected()
+                }
+
                 Rectangle {
                     width: 200
                     height: 150
@@ -118,7 +158,21 @@ Dialog {
                     color: theme.window
                     border.color: theme.accent
                     border.width: 2
-                    Label { anchors.centerIn: parent; text: "我"; color: theme.text }
+                    clip: true
+
+                    VideoOutput {
+                        id: localPreview
+                        anchors.fill: parent
+                        fillMode: VideoOutput.PreserveAspectCrop
+                        Component.onCompleted: controller.setLocalVideoSink(videoSink)
+                    }
+
+                    Label {
+                        anchors.centerIn: parent
+                        text: "我"
+                        color: theme.text
+                        visible: !root.callIsConnected()
+                    }
                 }
             }
             Rectangle {
@@ -134,8 +188,8 @@ Dialog {
                     Label { text: controller.callStatus; color: theme.muted }
                     Label { text: root.durationText(); color: theme.accent; font.pixelSize: 16 }
                     Item { Layout.fillWidth: true }
-                    Button { text: "接听"; visible: controller.callStatus !== "通话中"; onClicked: controller.answerCall() }
-                    Button { text: "挂断"; onClicked: controller.hangupCall() }
+                    Button { text: "接听"; visible: controller.callCanAnswer; onClicked: controller.answerCall() }
+                    Button { text: controller.callCanAnswer ? "拒绝" : "挂断"; onClicked: controller.hangupCall() }
                 }
             }
         }

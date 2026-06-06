@@ -78,12 +78,6 @@ Rectangle {
                         color: theme.muted
                     }
                 }
-                // RowLayout {
-                //     Layout.fillWidth: true
-                //     Button { text: "添加"; Layout.fillWidth: true; onClicked: root.addFriendRequested() }
-                //     Button { text: "删除"; Layout.fillWidth: true; enabled: controller.hasSelectedFriend; onClicked: root.deleteFriendRequested() }
-                //     Button { text: "编辑备注"; Layout.fillWidth: true; enabled: controller.hasSelectedFriend; onClicked: root.editFriendRemarkRequested() }
-                // }
             }
 
             ColumnLayout {
@@ -107,12 +101,6 @@ Rectangle {
                         text: "暂无群聊"
                         color: theme.muted
                     }
-                }
-                RowLayout {
-                    Layout.fillWidth: true
-                    Button { text: "创建"; Layout.fillWidth: true; onClicked: controller.createGroup("群聊") }
-                    Button { text: "邀请"; Layout.fillWidth: true; onClicked: controller.inviteSelectedFriendToGroup() }
-                    Button { text: "退出"; Layout.fillWidth: true; onClicked: controller.leaveSelectedGroup() }
                 }
             }
         }

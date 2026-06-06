@@ -16,6 +16,7 @@
 #include <QStandardPaths>
 #include <QUrl>
 #include <algorithm>
+#include <cstddef>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -24,6 +25,7 @@
 
 namespace {
 constexpr uint32_t kInvalidNumber = std::numeric_limits<uint32_t>::max();
+constexpr int kCallRecordMessageType = 100;
 constexpr int kFileRecordMessageType = 101;
 
 struct BootstrapNode {
@@ -139,6 +141,78 @@ QString fileRecordBody(QString const &fileName, uint64_t fileSize,
       .arg(fileName)
       .arg(static_cast<qulonglong>(fileSize))
       .arg(status);
+}
+
+QString formatCallDuration(int seconds) {
+  if (seconds <= 0) {
+    return {};
+  }
+  int const hours = seconds / 3600;
+  int const minutes = (seconds % 3600) / 60;
+  int const secs = seconds % 60;
+  if (hours > 0) {
+    return QStringLiteral("%1小时%2分钟%3秒").arg(hours).arg(minutes).arg(secs);
+  }
+  if (minutes > 0) {
+    return QStringLiteral("%1分钟%2秒").arg(minutes).arg(secs);
+  }
+  return QStringLiteral("%1秒").arg(secs);
+}
+
+QString callRecordBody(bool videoEnabled, QString const &statusKey,
+                       int durationSeconds) {
+  QString body = QStringLiteral("CALL:%1:%2")
+                     .arg(videoEnabled ? QStringLiteral("VIDEO")
+                                       : QStringLiteral("AUDIO"),
+                          statusKey);
+  if (durationSeconds > 0) {
+    body += QStringLiteral(":%1").arg(durationSeconds);
+  }
+  return body;
+}
+
+QString callStatusText(QString const &statusKey) {
+  if (statusKey == QStringLiteral("HANGUP_SELF")) {
+    return QStringLiteral("您已挂断");
+  }
+  if (statusKey == QStringLiteral("HANGUP_REMOTE")) {
+    return QStringLiteral("对方已挂断");
+  }
+  if (statusKey == QStringLiteral("CANCEL_SELF")) {
+    return QStringLiteral("您已取消");
+  }
+  if (statusKey == QStringLiteral("CANCEL_REMOTE")) {
+    return QStringLiteral("对方已取消");
+  }
+  if (statusKey == QStringLiteral("REJECT_SELF")) {
+    return QStringLiteral("您已拒绝");
+  }
+  if (statusKey == QStringLiteral("REJECT_REMOTE")) {
+    return QStringLiteral("对方已拒绝");
+  }
+  if (statusKey == QStringLiteral("ERROR")) {
+    return QStringLiteral("通话异常结束");
+  }
+  return QStringLiteral("通话已结束");
+}
+
+bool callStatusIsLocal(QString const &statusKey) {
+  return statusKey.endsWith(QStringLiteral("_SELF"));
+}
+
+QString callMessageText(bool videoEnabled, QString const &statusKey,
+                        int durationSeconds) {
+  QString text = QStringLiteral("%1 %2 · %3")
+                     .arg(videoEnabled ? QStringLiteral("📹")
+                                       : QStringLiteral("📞"),
+                          videoEnabled ? QStringLiteral("视频通话")
+                                       : QStringLiteral("语音通话"),
+                          callStatusText(statusKey));
+  QString const duration = formatCallDuration(durationSeconds);
+  if (!duration.isEmpty() && statusKey.startsWith(QStringLiteral("HANGUP_"))) {
+    text += QStringLiteral("，时长：%1").arg(duration);
+  }
+  return text;
 }
 
 QString avatarText(QString const &displayName) {
@@ -317,7 +391,13 @@ QString AppController::selectedFriendRemark() const {
   return storageService_.contactNickname(publicKey);
 }
 
-bool AppController::callActive() const { return callActive_; }
+bool AppController::callActive() const { return callPhase_ != CallPhase::Idle; }
+bool AppController::callIncoming() const {
+  return callPhase_ == CallPhase::IncomingRinging;
+}
+bool AppController::callCanAnswer() const {
+  return callPhase_ == CallPhase::IncomingRinging;
+}
 bool AppController::callVideoEnabled() const { return callVideoEnabled_; }
 QString AppController::callTitle() const { return callTitle_; }
 QString AppController::callStatus() const { return callStatus_; }
@@ -1001,55 +1081,66 @@ void AppController::sendFileStub() {
   addNotice(QStringLiteral("file"), QStringLiteral("请选择文件后发送。"));
 }
 
-void AppController::startAudioCall() {
-  if (selectedKind_ == ConversationKind::None) {
-    addNotice(QStringLiteral("call"), QStringLiteral("请先选择会话。"),
-              QStringLiteral("warning"));
-    return;
-  }
-  callActive_ = true;
-  callVideoEnabled_ = false;
-  callTitle_ = currentConversationTitle();
-  callStatus_ = QStringLiteral("等待对方接听...");
-  emit callStateChanged();
-  addNotice(QStringLiteral("call"), callService_.startCall(callTitle_, false));
-  appendCurrentSystemMessage(QStringLiteral("音频通话占位窗口已打开。"));
-  emit callShellRequested();
-}
+void AppController::startAudioCall() { beginOutgoingCall(false); }
 
-void AppController::startVideoCall() {
-  if (selectedKind_ == ConversationKind::None) {
-    addNotice(QStringLiteral("call"), QStringLiteral("请先选择会话。"),
-              QStringLiteral("warning"));
-    return;
-  }
-  callActive_ = true;
-  callVideoEnabled_ = true;
-  callTitle_ = currentConversationTitle();
-  callStatus_ = QStringLiteral("等待对方接听...");
-  emit callStateChanged();
-  addNotice(QStringLiteral("call"), callService_.startCall(callTitle_, true));
-  appendCurrentSystemMessage(QStringLiteral("视频通话占位窗口已打开。"));
-  emit callShellRequested();
-}
+void AppController::startVideoCall() { beginOutgoingCall(true); }
 
 void AppController::answerCall() {
-  if (!callActive_) {
+  if (callPhase_ != CallPhase::IncomingRinging || !tox_ ||
+      currentCallFriend_ == kInvalidNumber) {
     return;
   }
-  callStatus_ = QStringLiteral("通话中");
-  emit callStateChanged();
+
+  if (tox_->Answer(currentCallFriend_, callOptions(callVideoEnabled_)) != 0) {
+    addNotice(QStringLiteral("call"), QStringLiteral("接听失败。"),
+              QStringLiteral("warning"));
+    return;
+  }
+
+  markCallActive();
+  if (callVideoEnabled_ && video_) {
+    video_->StartCamera();
+  }
 }
 
 void AppController::hangupCall() {
-  if (!callActive_) {
+  if (callPhase_ == CallPhase::Idle) {
     return;
   }
-  addNotice(QStringLiteral("call"), callService_.hangupCall(callTitle_));
-  appendCurrentSystemMessage(QStringLiteral("通话占位流程已结束。"));
-  callActive_ = false;
-  callStatus_ = QStringLiteral("通话已结束");
-  emit callStateChanged();
+
+  QString statusKey;
+  if (callPhase_ == CallPhase::Active) {
+    statusKey = QStringLiteral("HANGUP_SELF");
+  } else if (callPhase_ == CallPhase::OutgoingRinging) {
+    statusKey = QStringLiteral("CANCEL_SELF");
+  } else if (callPhase_ == CallPhase::IncomingRinging) {
+    statusKey = QStringLiteral("REJECT_SELF");
+  } else {
+    statusKey = QStringLiteral("HANGUP_SELF");
+  }
+
+  localHangupPending_ = true;
+  callPhase_ = CallPhase::Ending;
+  if (!callRecordWritten_ && currentCallFriend_ != kInvalidNumber) {
+    appendCallRecord(currentCallFriend_, callVideoEnabled_, statusKey);
+    callRecordWritten_ = true;
+  }
+  if (tox_ && currentCallFriend_ != kInvalidNumber) {
+    tox_->Hangup(currentCallFriend_);
+  }
+  resetCallState();
+}
+
+void AppController::setLocalVideoSink(QObject *sink) {
+  if (video_) {
+    video_->SetLocalPreviewSink(sink);
+  }
+}
+
+void AppController::setRemoteVideoSink(QObject *sink) {
+  if (video_) {
+    video_->SetRemoteVideoSink(sink);
+  }
 }
 
 void AppController::onIterateTick() {
@@ -1066,6 +1157,7 @@ void AppController::onIterateTick() {
       addNotice(QStringLiteral("network"),
                 QStringLiteral("network is %1").arg(connectionLabel(connection)));
     }
+    sendActiveCallMedia();
   } catch (std::exception const &e) {
     addNotice(QStringLiteral("status"),
               QStringLiteral("iterate failed: %1").arg(QString::fromUtf8(e.what())),
@@ -1090,6 +1182,7 @@ bool AppController::startTox() {
   friendPublicKeyCache_.clear();
   fileTransfers_.clear();
   pendingIncomingFiles_.clear();
+  resetCallState();
   emit pendingFriendRequestChanged();
   selfConnection_ = TOX_CONNECTION_NONE;
   networkStatus_ = QStringLiteral("network: starting");
@@ -1130,6 +1223,7 @@ bool AppController::startTox() {
     selfToxId_ = QString::fromStdString(tox_->GetSelfAddressHex());
     emit selfToxIdChanged();
 
+    configureCallMedia();
     registerToxCallbacks();
     bootstrapFromConfig();
     refreshFriendList();
@@ -1224,6 +1318,25 @@ void AppController::registerToxCallbacks() {
                                   uint64_t position, uint8_t const *data,
                                   size_t length) {
     onFileRecvChunk(friendNumber, fileNumber, position, data, length);
+  });
+
+  tox_->SetOnCall([this](uint32_t friendNumber, bool audioEnabled,
+                         bool videoEnabled) {
+    onIncomingCall(friendNumber, audioEnabled, videoEnabled);
+  });
+  tox_->SetOnCallState([this](uint32_t friendNumber,
+                              TOXAV_FRIEND_CALL_STATE state) {
+    onCallState(friendNumber, state);
+  });
+  tox_->SetOnAudioFrame([this](uint32_t friendNumber, int16_t const *pcm,
+                               size_t samples, uint8_t channels,
+                               uint32_t samplingRate) {
+    onAudioFrame(friendNumber, pcm, samples, channels, samplingRate);
+  });
+  tox_->SetOnVideoFrame([this](uint32_t friendNumber, uint16_t width,
+                               uint16_t height, uint8_t const *y,
+                               uint8_t const *u, uint8_t const *v) {
+    onVideoFrame(friendNumber, width, height, y, u, v);
   });
 
   tox_->SetOnConferenceInvite([this](uint32_t friendNumber, TOX_CONFERENCE_TYPE,
@@ -1395,7 +1508,7 @@ void AppController::loadSelectedConversation() {
   if (messages.isEmpty() && selectedKind_ == ConversationKind::Friend) {
     uint32_t const friendNumber = numericIdentifier(selectedIdentifier_);
     if (friendNumber != kInvalidNumber) {
-      loadPersistedFileRecords(friendNumber, messages);
+      loadPersistedFriendRecords(friendNumber, messages);
       if (!messages.isEmpty()) {
         chatHistory_.insert(key, messages);
       }
@@ -1475,6 +1588,40 @@ void AppController::saveFileRecord(uint32_t friendNumber, bool isSending,
       QDateTime::currentMSecsSinceEpoch());
 }
 
+void AppController::appendCallRecord(uint32_t friendNumber, bool videoEnabled,
+                                      QString const &statusKey,
+                                      int durationSeconds, bool saveToDb) {
+  int const recordDuration = durationSeconds >= 0
+                                 ? durationSeconds
+                                 : (statusKey.startsWith(QStringLiteral("HANGUP_"))
+                                        ? currentCallDurationSeconds()
+                                        : 0);
+  bool const isLocal = callStatusIsLocal(statusKey);
+  appendMessageToConversation(
+      ConversationKind::Friend, QString::number(friendNumber),
+      {makeMessageIdentifier(),
+       isLocal ? QStringLiteral("我") : friendDisplayName(friendNumber),
+       callMessageText(videoEnabled, statusKey, recordDuration), timestampText(),
+       isLocal, false, QStringLiteral("call"), -1, statusKey});
+
+  if (saveToDb) {
+    saveCallRecord(friendNumber, videoEnabled, statusKey, recordDuration);
+  }
+}
+
+void AppController::saveCallRecord(uint32_t friendNumber, bool videoEnabled,
+                                    QString const &statusKey,
+                                    int durationSeconds) {
+  QString const publicKey = friendPublicKey(friendNumber);
+  if (publicKey.isEmpty()) {
+    return;
+  }
+  storageService_.saveFriendMessage(
+      publicKey, callStatusIsLocal(statusKey) ? 1 : 0, kCallRecordMessageType,
+      callRecordBody(videoEnabled, statusKey, durationSeconds),
+      QDateTime::currentMSecsSinceEpoch());
+}
+
 void AppController::updateFileTransferMessage(FileTransfer const &transfer,
                                               QString const &status,
                                               QString const &deliveryState) {
@@ -1489,7 +1636,7 @@ void AppController::updateFileTransferMessage(FileTransfer const &transfer,
       progress, deliveryState);
 }
 
-void AppController::loadPersistedFileRecords(
+void AppController::loadPersistedFriendRecords(
     uint32_t friendNumber, QVector<ChatMessageItem> &messages) {
   QString const publicKey = friendPublicKey(friendNumber);
   if (publicKey.isEmpty()) {
@@ -1497,6 +1644,31 @@ void AppController::loadPersistedFileRecords(
   }
   for (Persistence::SqliteStorage::MessageRow const &row:
        storageService_.loadRecentFriendMessages(publicKey, 200)) {
+    if (row.toxMessageType == kCallRecordMessageType &&
+        row.body.startsWith(QStringLiteral("CALL:"))) {
+      QStringList const parts = row.body.split(QChar(':'));
+      if (parts.size() < 3) {
+        continue;
+      }
+      bool const videoEnabled = parts.at(1) == QStringLiteral("VIDEO");
+      QString const statusKey = parts.at(2);
+      bool durationOk = false;
+      int const durationSeconds = parts.size() >= 4 ? parts.at(3).toInt(&durationOk) : 0;
+      bool const isLocal = row.direction == 1;
+      messages.push_back({makeMessageIdentifier(),
+                          isLocal ? QStringLiteral("我")
+                                  : friendDisplayName(friendNumber),
+                          callMessageText(videoEnabled, statusKey,
+                                          durationOk ? durationSeconds : 0),
+                          timestampText(row.createdAtMs),
+                          isLocal,
+                          false,
+                          QStringLiteral("call"),
+                          -1,
+                          statusKey});
+      continue;
+    }
+
     if (row.toxMessageType != kFileRecordMessageType ||
         !row.body.startsWith(QStringLiteral("FILE:"))) {
       continue;
@@ -1708,6 +1880,327 @@ void AppController::onFileRecvChunk(uint32_t friendNumber, uint32_t fileNumber,
       std::max<uint64_t>(transfer.transferred, position + static_cast<uint64_t>(length)));
   updateFileTransferMessage(transfer, QStringLiteral("receiving"),
                             QStringLiteral("receiving"));
+}
+
+void AppController::onIncomingCall(uint32_t friendNumber, bool audioEnabled,
+                                   bool videoEnabled) {
+  Q_UNUSED(audioEnabled)
+  if (!tox_) {
+    return;
+  }
+  if (callPhase_ != CallPhase::Idle) {
+    tox_->Hangup(friendNumber);
+    appendCallRecord(friendNumber, videoEnabled, QStringLiteral("REJECT_SELF"));
+    addNotice(QStringLiteral("call"), QStringLiteral("已有通话，已拒绝新的来电。"),
+              QStringLiteral("warning"));
+    return;
+  }
+
+  currentCallFriend_ = friendNumber;
+  currentCallOutgoing_ = false;
+  callVideoEnabled_ = videoEnabled;
+  localHangupPending_ = false;
+  callRecordWritten_ = false;
+  callAnsweredAtMs_ = 0;
+  callPhase_ = CallPhase::IncomingRinging;
+  callTitle_ = friendDisplayName(friendNumber);
+  callStatus_ = videoEnabled ? QStringLiteral("视频来电，等待接听...")
+                             : QStringLiteral("语音来电，等待接听...");
+  emit callStateChanged();
+  addNotice(QStringLiteral("call"), QStringLiteral("收到来自 %1 的来电。")
+                                    .arg(callTitle_));
+  emit callShellRequested();
+}
+
+void AppController::onCallState(uint32_t friendNumber,
+                                TOXAV_FRIEND_CALL_STATE state) {
+  if (friendNumber != currentCallFriend_) {
+    return;
+  }
+  if (state & TOXAV_FRIEND_CALL_STATE_FINISHED) {
+    finishCallFromRemote(false);
+    return;
+  }
+  if (state & TOXAV_FRIEND_CALL_STATE_ERROR) {
+    finishCallFromRemote(true);
+    return;
+  }
+  if (state & (TOXAV_FRIEND_CALL_STATE_SENDING_A |
+               TOXAV_FRIEND_CALL_STATE_SENDING_V |
+               TOXAV_FRIEND_CALL_STATE_ACCEPTING_A |
+               TOXAV_FRIEND_CALL_STATE_ACCEPTING_V)) {
+    markCallActive();
+  }
+}
+
+void AppController::onAudioFrame(uint32_t friendNumber, int16_t const *pcm,
+                                 size_t samples, uint8_t channels,
+                                 uint32_t samplingRate) {
+  if (friendNumber != currentCallFriend_ || callPhase_ != CallPhase::Active ||
+      !audio_ || !pcm) {
+    return;
+  }
+  if (channels != audioFrameParams_.channels ||
+      samplingRate != audioFrameParams_.samplingRate) {
+    return;
+  }
+  size_t const totalSamples = samples * static_cast<size_t>(channels);
+  audio_->Play(reinterpret_cast<uint8_t const *>(pcm),
+               static_cast<qsizetype>(totalSamples * sizeof(int16_t)));
+}
+
+void AppController::onVideoFrame(uint32_t friendNumber, uint16_t width,
+                                 uint16_t height, uint8_t const *y,
+                                 uint8_t const *u, uint8_t const *v) {
+  if (friendNumber != currentCallFriend_ || callPhase_ != CallPhase::Active ||
+      !callVideoEnabled_ || !video_) {
+    return;
+  }
+  video_->RenderRemoteFrame(width, height, y, u, v);
+}
+
+void AppController::beginOutgoingCall(bool videoEnabled) {
+  if (callPhase_ != CallPhase::Idle) {
+    addNotice(QStringLiteral("call"), QStringLiteral("当前已有通话。"),
+              QStringLiteral("warning"));
+    return;
+  }
+  if (selectedKind_ != ConversationKind::Friend || selectedIdentifier_.isEmpty()) {
+    addNotice(QStringLiteral("call"), QStringLiteral("请先选择好友。"),
+              QStringLiteral("warning"));
+    return;
+  }
+  if (!tox_) {
+    addNotice(QStringLiteral("call"), QStringLiteral("Tox 尚未就绪，无法发起通话。"),
+              QStringLiteral("warning"));
+    return;
+  }
+
+  uint32_t const friendNumber = numericIdentifier(selectedIdentifier_);
+  if (friendNumber == kInvalidNumber) {
+    addNotice(QStringLiteral("call"), QStringLiteral("占位好友不能发起真实通话。"),
+              QStringLiteral("warning"));
+    return;
+  }
+  try {
+    if (!tox_->FriendExists(friendNumber)) {
+      addNotice(QStringLiteral("call"), QStringLiteral("请选择真实好友。"),
+                QStringLiteral("warning"));
+      return;
+    }
+  } catch (...) {
+    addNotice(QStringLiteral("call"), QStringLiteral("检查好友状态失败。"),
+              QStringLiteral("warning"));
+    return;
+  }
+
+  currentCallFriend_ = friendNumber;
+  currentCallOutgoing_ = true;
+  callVideoEnabled_ = videoEnabled;
+  localHangupPending_ = false;
+  callRecordWritten_ = false;
+  callAnsweredAtMs_ = 0;
+  callPhase_ = CallPhase::OutgoingRinging;
+  callTitle_ = friendDisplayName(friendNumber);
+  callStatus_ = videoEnabled ? QStringLiteral("等待对方接听视频通话...")
+                             : QStringLiteral("等待对方接听语音通话...");
+
+  if (tox_->Call(friendNumber, callOptions(videoEnabled)) != 0) {
+    addNotice(QStringLiteral("call"), QStringLiteral("发起通话失败。"),
+              QStringLiteral("warning"));
+    resetCallState();
+    return;
+  }
+
+  if (videoEnabled && video_) {
+    video_->StartCamera();
+  }
+  emit callStateChanged();
+  addNotice(QStringLiteral("call"), QStringLiteral("已向 %1 发起通话。")
+                                  .arg(callTitle_));
+  emit callShellRequested();
+}
+
+void AppController::configureCallMedia() {
+  avConfig_ = AppConfig::LoadAvCallConfig();
+  audioFrameParams_.channels = static_cast<uint8_t>(
+      std::clamp(avConfig_.audio.channels, 1, 2));
+  audioFrameParams_.samplingRate = static_cast<uint32_t>(
+      std::clamp(avConfig_.audio.sampleRate, 8000, 48000));
+  audioFrameSamplesPerChannel_ = std::max(
+      1, static_cast<int>((audioFrameParams_.samplingRate *
+                           static_cast<uint32_t>(std::max(1, avConfig_.audio.frameDurationMs))) /
+                          1000));
+  audioSendBuffer_.resize(static_cast<size_t>(audioFrameSamplesPerChannel_) *
+                          audioFrameParams_.channels);
+  audioCaptureBuffer_.clear();
+  videoSendIntervalMs_ = avConfig_.video.sendFps <= 0
+                             ? 0
+                             : std::max(1, 1000 / avConfig_.video.sendFps);
+  videoSendTimer_.invalidate();
+
+  if (!audio_) {
+    audio_ = std::make_unique<AudioManager>(this, audioFrameParams_.samplingRate,
+                                            audioFrameParams_.channels);
+  }
+  if (!video_) {
+    video_ = std::make_unique<VideoManager>(this);
+  }
+  if (video_) {
+    video_->SetSendTargetSize(avConfig_.video.targetWidth,
+                              avConfig_.video.targetHeight,
+                              avConfig_.video.keepAspect);
+  }
+}
+
+ToxCore::CallOptions AppController::callOptions(bool videoEnabled) const {
+  return {.audioEnabled = true,
+          .videoEnabled = videoEnabled,
+          .audioBitrateKbps = static_cast<uint32_t>(
+              std::max(1, avConfig_.audio.bitrateKbps)),
+          .videoBitrateKbps = static_cast<uint32_t>(
+              std::max(1, avConfig_.video.bitrateKbps))};
+}
+
+void AppController::markCallActive() {
+  if (callPhase_ == CallPhase::Active) {
+    return;
+  }
+  callPhase_ = CallPhase::Active;
+  if (callAnsweredAtMs_ <= 0) {
+    callAnsweredAtMs_ = QDateTime::currentMSecsSinceEpoch();
+  }
+  callStatus_ = callVideoEnabled_ ? QStringLiteral("视频通话中")
+                                  : QStringLiteral("通话中");
+  if (audio_) {
+    audio_->Start();
+  }
+  if (callVideoEnabled_ && video_) {
+    video_->StartCamera();
+  }
+  emit callStateChanged();
+}
+
+void AppController::finishCallFromRemote(bool error) {
+  if (currentCallFriend_ == kInvalidNumber) {
+    resetCallState();
+    return;
+  }
+  if (localHangupPending_ && callRecordWritten_) {
+    resetCallState();
+    return;
+  }
+
+  QString statusKey;
+  if (error) {
+    statusKey = QStringLiteral("ERROR");
+  } else if (callPhase_ == CallPhase::Active) {
+    statusKey = QStringLiteral("HANGUP_REMOTE");
+  } else if (callPhase_ == CallPhase::OutgoingRinging) {
+    statusKey = QStringLiteral("REJECT_REMOTE");
+  } else if (callPhase_ == CallPhase::IncomingRinging) {
+    statusKey = QStringLiteral("CANCEL_REMOTE");
+  } else {
+    statusKey = QStringLiteral("HANGUP_REMOTE");
+  }
+  appendCallRecord(currentCallFriend_, callVideoEnabled_, statusKey);
+  callRecordWritten_ = true;
+  addNotice(QStringLiteral("call"), callStatusText(statusKey));
+  resetCallState();
+}
+
+void AppController::resetCallState() {
+  cleanupCallMedia();
+  callPhase_ = CallPhase::Idle;
+  currentCallFriend_ = kInvalidNumber;
+  currentCallOutgoing_ = false;
+  callVideoEnabled_ = false;
+  localHangupPending_ = false;
+  callRecordWritten_ = false;
+  callAnsweredAtMs_ = 0;
+  callTitle_.clear();
+  callStatus_ = QStringLiteral("通话已结束");
+  emit callStateChanged();
+}
+
+void AppController::cleanupCallMedia() {
+  if (audio_) {
+    audio_->Stop();
+  }
+  audioCaptureBuffer_.clear();
+  if (video_) {
+    video_->StopCamera();
+  }
+  videoSendTimer_.invalidate();
+}
+
+int AppController::currentCallDurationSeconds() const {
+  if (callAnsweredAtMs_ <= 0) {
+    return 0;
+  }
+  qint64 const elapsed = QDateTime::currentMSecsSinceEpoch() - callAnsweredAtMs_;
+  return static_cast<int>(std::max<qint64>(0, elapsed / 1000));
+}
+
+void AppController::sendActiveCallMedia() {
+  if (callPhase_ != CallPhase::Active || !tox_ || currentCallFriend_ == kInvalidNumber) {
+    videoSendTimer_.invalidate();
+    return;
+  }
+
+  if (audio_) {
+    if (audioSendBuffer_.empty()) {
+      audioSendBuffer_.resize(static_cast<size_t>(audioFrameSamplesPerChannel_) *
+                              audioFrameParams_.channels);
+    }
+    size_t const frameBytes = audioSendBuffer_.size() * sizeof(int16_t);
+    std::vector<uint8_t> readBuffer(frameBytes);
+    qsizetype const bytes = audio_->ReadCapture(
+        readBuffer.data(), static_cast<qsizetype>(readBuffer.size()));
+    if (bytes > 0) {
+      audioCaptureBuffer_.insert(audioCaptureBuffer_.end(), readBuffer.begin(),
+                                 readBuffer.begin() + bytes);
+    }
+    if (frameBytes > 0 && audioCaptureBuffer_.size() > frameBytes * 10) {
+      audioCaptureBuffer_.erase(
+          audioCaptureBuffer_.begin(),
+          audioCaptureBuffer_.begin() +
+              static_cast<std::ptrdiff_t>(audioCaptureBuffer_.size() - frameBytes * 10));
+    }
+    while (frameBytes > 0 && audioCaptureBuffer_.size() >= frameBytes) {
+      std::memcpy(audioSendBuffer_.data(), audioCaptureBuffer_.data(), frameBytes);
+      tox_->SendAudioFrame(currentCallFriend_, audioSendBuffer_.data(),
+                           static_cast<size_t>(audioFrameSamplesPerChannel_),
+                           audioFrameParams_);
+      audioCaptureBuffer_.erase(audioCaptureBuffer_.begin(),
+                                audioCaptureBuffer_.begin() +
+                                    static_cast<std::ptrdiff_t>(frameBytes));
+    }
+  }
+
+  if (!callVideoEnabled_ || !video_) {
+    videoSendTimer_.invalidate();
+    return;
+  }
+  if (!videoSendTimer_.isValid()) {
+    videoSendTimer_.start();
+  }
+  bool const shouldSend = videoSendIntervalMs_ <= 0 ||
+                          videoSendTimer_.elapsed() >= videoSendIntervalMs_;
+  if (!shouldSend) {
+    return;
+  }
+  if (videoSendIntervalMs_ > 0) {
+    videoSendTimer_.restart();
+  }
+  uint16_t width = 0;
+  uint16_t height = 0;
+  uint8_t *y = nullptr;
+  uint8_t *u = nullptr;
+  uint8_t *v = nullptr;
+  if (video_->GetFrame(width, height, y, u, v)) {
+    tox_->SendVideoFrame(currentCallFriend_, width, height, y, u, v);
+  }
 }
 
 void AppController::promptNextIncomingFile() {
