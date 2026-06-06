@@ -58,13 +58,14 @@ void AiCurlClient::SetMaxTokens(int tokens) {
   maxTokens_ = tokens;
 }
 
-void AiCurlClient::SendAiMessage(QString const &userText) {
+void AiCurlClient::SendAiMessage(QString const &userText,
+                                  QVector<AiChatMessage> const &history) {
   if (busy_) {
     return;
   }
   busy_ = true;
 
-  QByteArray const jsonBody = BuildRequestJson_(userText);
+  QByteArray const jsonBody = BuildRequestJson_(userText, history);
   QString const url = baseUrl_ + QStringLiteral("/chat/completions");
   QString const key = apiKey_;
   QPointer<AiCurlClient> self(this);
@@ -106,17 +107,31 @@ size_t AiCurlClient::CurlWriteCallback_(char *ptr, size_t size, size_t nmemb,
 
 // ==================== 请求构建 ====================
 
-QByteArray AiCurlClient::BuildRequestJson_(QString const &userText) const {
+QByteArray AiCurlClient::BuildRequestJson_(QString const &userText,
+                                             QVector<AiChatMessage> const &history) const {
   QJsonObject sysMsg;
   sysMsg[QStringLiteral("role")] = QStringLiteral("system");
   sysMsg[QStringLiteral("content")] = QStringLiteral("You are a helpful assistant.");
 
+  QJsonArray messages;
+  messages.append(sysMsg);
+
+  for (AiChatMessage const &item: history) {
+    QString const role = item.role.trimmed();
+    QString const content = item.content.trimmed();
+    if (content.isEmpty() ||
+        (role != QStringLiteral("user") && role != QStringLiteral("assistant"))) {
+      continue;
+    }
+    QJsonObject msg;
+    msg[QStringLiteral("role")] = role;
+    msg[QStringLiteral("content")] = content;
+    messages.append(msg);
+  }
+
   QJsonObject userMsg;
   userMsg[QStringLiteral("role")] = QStringLiteral("user");
   userMsg[QStringLiteral("content")] = userText;
-
-  QJsonArray messages;
-  messages.append(sysMsg);
   messages.append(userMsg);
 
   QJsonObject root;

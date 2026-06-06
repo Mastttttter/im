@@ -56,6 +56,7 @@ class StorageService final {
   void setMetaValue(QString const &key, QString const &value) const;
   void saveAiMessage(bool outgoing, QString const &body, qint64 createdAtMs) const;
   QList<Persistence::SqliteStorage::MessageRow> loadRecentAiMessages(int limit) const;
+  void clearAiMessages() const;
   QString themePreference() const;
   void saveThemePreference(QString const &theme);
 

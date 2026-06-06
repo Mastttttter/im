@@ -44,6 +44,7 @@ class AppController final : public QObject {
   Q_PROPERTY(QString aiProvider READ aiProvider NOTIFY aiSettingsChanged)
   Q_PROPERTY(double aiTemperature READ aiTemperature NOTIFY aiSettingsChanged)
   Q_PROPERTY(int aiMaxTokens READ aiMaxTokens NOTIFY aiSettingsChanged)
+  Q_PROPERTY(int aiContextLength READ aiContextLength NOTIFY aiSettingsChanged)
   Q_PROPERTY(bool aiBusy READ aiBusy NOTIFY aiBusyChanged)
   Q_PROPERTY(bool hasPendingFriendRequest READ hasPendingFriendRequest NOTIFY pendingFriendRequestChanged)
   Q_PROPERTY(QString pendingFriendRequestPublicKey READ pendingFriendRequestPublicKey NOTIFY pendingFriendRequestChanged)
@@ -81,6 +82,7 @@ class AppController final : public QObject {
   QString aiProvider() const;
   double aiTemperature() const;
   int aiMaxTokens() const;
+  int aiContextLength() const;
   bool aiBusy() const;
   bool hasPendingFriendRequest() const;
   QString pendingFriendRequestPublicKey() const;
@@ -120,7 +122,8 @@ class AppController final : public QObject {
                                   QString const &modelName,
                                   QString const &apiKey,
                                   QString const &provider,
-                                  double temperature, int maxTokens);
+                                  double temperature, int maxTokens,
+                                  int contextLength);
   Q_INVOKABLE void addFriend(QString const &toxId, QString const &message);
   Q_INVOKABLE bool acceptPendingFriendRequest();
   Q_INVOKABLE bool rejectPendingFriendRequest();
@@ -129,6 +132,7 @@ class AppController final : public QObject {
   Q_INVOKABLE void createGroup(QString const &title);
   Q_INVOKABLE void inviteSelectedFriendToGroup();
   Q_INVOKABLE void leaveSelectedGroup();
+  Q_INVOKABLE void clearAssistantHistory();
   Q_INVOKABLE void sendMessage(QString const &text);
   Q_INVOKABLE void sendFile(QString const &localFileUrlOrPath);
   Q_INVOKABLE void acceptIncomingFile(QString const &localFileUrlOrPath);
@@ -207,6 +211,7 @@ class AppController final : public QObject {
   void appendMessageToConversation(ConversationKind kind, QString const &identifier,
                                    ChatMessageItem message);
   void sendAssistantMessage(QString const &body);
+  QVector<AiChatMessage> buildAssistantRequestHistory() const;
   void appendAssistantMessage(bool outgoing, QString const &text,
                               qint64 createdAtMs, bool saveToDb);
   void loadPersistedAiMessages(QVector<ChatMessageItem> &messages);
@@ -332,6 +337,7 @@ class AppController final : public QObject {
   QHash<QString, ContactItem> stubFriends_;
   QHash<QString, ContactItem> stubGroups_;
   QHash<QString, QVector<ChatMessageItem>> chatHistory_;
+  int aiContextLength_{32768};
   QHash<QString, FileTransfer> fileTransfers_;
   QVector<PendingIncomingFile> pendingIncomingFiles_;
 

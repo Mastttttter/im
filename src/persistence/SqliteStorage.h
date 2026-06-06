@@ -107,6 +107,13 @@ class SqliteStorage {
                                        int limit) const;
 
   /**
+   * @brief 删除某个好友或伪联系人名下的所有消息
+   *
+   * @param friendPubKeyHex 好友公钥或伪联系人键
+   */
+  void DeleteMessagesForContact(QString const &friendPubKeyHex);
+
+  /**
    * @brief 清理重复的消息记录（保留每组重复记录中 ID 最小的那条）
    *
    * 根据 friend_pub_key_hex, direction, tox_message_type, body, created_at_ms

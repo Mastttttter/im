@@ -9,6 +9,7 @@ Rectangle {
     signal fileRequested()
     signal audioCallRequested()
     signal videoCallRequested()
+    signal clearAssistantHistoryRequested()
 
     radius: 8
     color: theme.panel
@@ -27,6 +28,12 @@ Rectangle {
                 font.pixelSize: 18
                 font.bold: true
                 Layout.fillWidth: true
+            }
+            Button {
+                text: "清空历史"
+                visible: controller.selectedConversationKind === "assistant"
+                enabled: !controller.aiBusy
+                onClicked: root.clearAssistantHistoryRequested()
             }
             Button { text: "发送文件"; onClicked: root.fileRequested() }
             Button { text: "音频通话"; enabled: controller.hasSelectedFriend; onClicked: root.audioCallRequested() }

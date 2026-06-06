@@ -387,6 +387,17 @@ StorageService::loadRecentAiMessages(int limit) const {
   }
 }
 
+void StorageService::clearAiMessages() const {
+  if (!store_.IsOpen()) {
+    return;
+  }
+  try {
+    store_.DeleteMessagesForContact(QString::fromLatin1(kAiLocalPubKey));
+    store_.EnsureContact(QString::fromLatin1(kAiLocalPubKey),
+                         QDateTime::currentMSecsSinceEpoch());
+  } catch (...) {}
+}
+
 QString StorageService::themePreference() const {
   QSettings settings;
   return settings.value(QStringLiteral("ui/theme"), QStringLiteral("dark"))

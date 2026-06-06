@@ -29,6 +29,9 @@ constexpr uint32_t kInvalidNumber = std::numeric_limits<uint32_t>::max();
 constexpr int kCallRecordMessageType = 100;
 constexpr int kFileRecordMessageType = 101;
 constexpr int kAiRecentMessageLimit = 200;
+constexpr int kAiRequestHistoryMessageLimit = 10000;
+constexpr int kDefaultAiContextLength = 32768;
+constexpr int kMaxAiContextLength = 1000000;
 
 struct BootstrapNode {
   QString address;
@@ -94,6 +97,12 @@ QString fileSizeText(uint64_t bytes) {
     return QStringLiteral("%1 B").arg(static_cast<qulonglong>(bytes));
   }
   return QStringLiteral("%1 %2").arg(value, 0, 'f', 1).arg(units.at(unit));
+}
+
+qint64 estimatedAiContextUnits(QString const &role, QString const &content) {
+  qint64 const roleUnits = (role.toUtf8().size() + 3) / 4;
+  qint64 const contentUnits = (content.toUtf8().size() + 3) / 4;
+  return roleUnits + contentUnits + 8;
 }
 
 int fileProgress(uint64_t transferred, uint64_t fileSize) {
@@ -383,6 +392,9 @@ double AppController::aiTemperature() const {
 int AppController::aiMaxTokens() const {
   return aiClient_ ? aiClient_->MaxTokens() : 4096;
 }
+int AppController::aiContextLength() const {
+  return aiContextLength_;
+}
 bool AppController::aiBusy() const {
   return aiClient_ && aiClient_->IsBusy();
 }
@@ -589,7 +601,8 @@ bool AppController::saveAiSettings(QString const &baseUrl,
                                    QString const &modelName,
                                    QString const &apiKey,
                                    QString const &provider,
-                                   double temperature, int maxTokens) {
+                                   double temperature, int maxTokens,
+                                   int contextLength) {
   QString const normalizedBaseUrl = baseUrl.trimmed();
   QString const normalizedModel = modelName.trimmed();
   QString const normalizedApiKey = apiKey.trimmed();
@@ -611,6 +624,8 @@ bool AppController::saveAiSettings(QString const &baseUrl,
   double const normalizedTemperature =
       std::isfinite(temperature) ? std::clamp(temperature, 0.0, 2.0) : 0.0;
   int const normalizedMaxTokens = std::clamp(maxTokens, 64, 65536);
+  int const normalizedContextLength =
+      std::clamp(contextLength, 0, kMaxAiContextLength);
 
   aiClient_->SetBaseUrl(normalizedBaseUrl);
   aiClient_->SetModelName(normalizedModel);
@@ -618,6 +633,7 @@ bool AppController::saveAiSettings(QString const &baseUrl,
   aiClient_->SetProvider(normalizedProvider);
   aiClient_->SetTemperature(normalizedTemperature);
   aiClient_->SetMaxTokens(normalizedMaxTokens);
+  aiContextLength_ = normalizedContextLength;
 
   storageService_.setMetaValue(QStringLiteral("ai.base_url"), aiClient_->BaseUrl());
   storageService_.setMetaValue(QStringLiteral("ai.model_name"), aiClient_->ModelName());
@@ -627,6 +643,8 @@ bool AppController::saveAiSettings(QString const &baseUrl,
                                QString::number(aiClient_->Temperature(), 'f', 1));
   storageService_.setMetaValue(QStringLiteral("ai.max_tokens"),
                                QString::number(aiClient_->MaxTokens()));
+  storageService_.setMetaValue(QStringLiteral("ai.context_length"),
+                               QString::number(aiContextLength_));
 
   emit aiSettingsChanged();
   addNotice(QStringLiteral("ai"),
@@ -885,6 +903,23 @@ void AppController::leaveSelectedGroup() {
   refreshGroupList();
   addNotice(QStringLiteral("group"), QStringLiteral("已退出群聊。"));
   selectAssistant();
+}
+
+void AppController::clearAssistantHistory() {
+  if (aiClient_ && aiClient_->IsBusy()) {
+    addNotice(QStringLiteral("ai"), QStringLiteral("AI 正在生成回复，暂不能清空历史。"),
+              QStringLiteral("warning"));
+    return;
+  }
+
+  storageService_.clearAiMessages();
+  chatHistory_.remove(conversationKey(ConversationKind::Assistant,
+                                      QStringLiteral("assistant")));
+  if (selectedKind_ == ConversationKind::Assistant &&
+      selectedIdentifier_ == QStringLiteral("assistant")) {
+    chatModel_.clear();
+  }
+  addNotice(QStringLiteral("ai"), QStringLiteral("AI 助手历史已清空。"));
 }
 
 void AppController::sendMessage(QString const &text) {
@@ -1619,10 +1654,68 @@ void AppController::sendAssistantMessage(QString const &body) {
     return;
   }
 
+  QVector<AiChatMessage> const history = buildAssistantRequestHistory();
   qint64 const now = QDateTime::currentMSecsSinceEpoch();
   appendAssistantMessage(true, body, now, true);
-  aiClient_->SendAiMessage(body);
+  aiClient_->SendAiMessage(body, history);
   emit aiBusyChanged();
+}
+
+QVector<AiChatMessage> AppController::buildAssistantRequestHistory() const {
+  if (aiContextLength_ <= 0) {
+    return {};
+  }
+
+  QVector<AiChatMessage> candidates;
+  QList<Persistence::SqliteStorage::MessageRow> const rows =
+      storageService_.loadRecentAiMessages(kAiRequestHistoryMessageLimit);
+  if (!rows.isEmpty()) {
+    candidates.reserve(rows.size());
+    for (Persistence::SqliteStorage::MessageRow const &row: rows) {
+      QString const content = row.body.trimmed();
+      if (content.isEmpty()) {
+        continue;
+      }
+      candidates.push_back({row.direction == 1 ? QStringLiteral("user")
+                                                : QStringLiteral("assistant"),
+                            content});
+    }
+  } else {
+    QString const key = conversationKey(ConversationKind::Assistant,
+                                        QStringLiteral("assistant"));
+    QVector<ChatMessageItem> const cached = chatHistory_.value(key);
+    candidates.reserve(cached.size());
+    for (ChatMessageItem const &message: cached) {
+      QString const content = message.text.trimmed();
+      if (message.system || content.isEmpty()) {
+        continue;
+      }
+      if (message.outgoing) {
+        if (message.deliveryState == QStringLiteral("sent")) {
+          candidates.push_back({QStringLiteral("user"), content});
+        }
+        continue;
+      }
+      if (message.messageType == QStringLiteral("assistant") &&
+          message.deliveryState == QStringLiteral("received")) {
+        candidates.push_back({QStringLiteral("assistant"), content});
+      }
+    }
+  }
+
+  QVector<AiChatMessage> selected;
+  qint64 usedUnits = 0;
+  qint64 const maxUnits = aiContextLength_;
+  for (qsizetype i = candidates.size() - 1; i >= 0; --i) {
+    AiChatMessage const &message = candidates.at(i);
+    qint64 const units = estimatedAiContextUnits(message.role, message.content);
+    if (usedUnits + units > maxUnits) {
+      break;
+    }
+    selected.prepend(message);
+    usedUnits += units;
+  }
+  return selected;
 }
 
 void AppController::appendAssistantMessage(bool outgoing, QString const &text,
@@ -1673,6 +1766,7 @@ void AppController::loadAiSettings() {
   aiClient_->SetProvider(QStringLiteral("tokenpony"));
   aiClient_->SetTemperature(0.0);
   aiClient_->SetMaxTokens(4096);
+  aiContextLength_ = kDefaultAiContextLength;
 
   QString const baseUrl = storageService_.metaValue(QStringLiteral("ai.base_url"),
                                                     aiClient_->BaseUrl());
@@ -1698,6 +1792,12 @@ void AppController::loadAiSettings() {
   int const parsedMaxTokens = maxTokens.toInt(&maxTokensOk);
   if (maxTokensOk) {
     aiClient_->SetMaxTokens(std::clamp(parsedMaxTokens, 64, 65536));
+  }
+  QString const contextLength = storageService_.metaValue(QStringLiteral("ai.context_length"));
+  bool contextLengthOk = false;
+  int const parsedContextLength = contextLength.toInt(&contextLengthOk);
+  if (contextLengthOk) {
+    aiContextLength_ = std::clamp(parsedContextLength, 0, kMaxAiContextLength);
   }
 
   emit aiSettingsChanged();

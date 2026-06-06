@@ -485,6 +485,17 @@ QList<SqliteStorage::MessageRow> SqliteStorage::LoadRecentMessages(
   return rows;
 }
 
+void SqliteStorage::DeleteMessagesForContact(QString const &friendPubKeyHex) {
+  if (!db_) {
+    throw std::logic_error("database is not open");
+  }
+
+  SQLite::Statement stmt(*db_,
+                         "DELETE FROM messages WHERE friend_pubkey_hex = ?;");
+  stmt.bind(1, ToUtf8String_(friendPubKeyHex));
+  stmt.exec();
+}
+
 // 清理重复的消息记录：保留每组重复记录中 ID 最小的那条，删除其他重复记录
 int SqliteStorage::CleanupDuplicateMessages() {
   if (!db_) {

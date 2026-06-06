@@ -178,6 +178,7 @@ Rectangle {
             providerField.text = controller.aiProvider
             temperatureField.text = Number(controller.aiTemperature).toFixed(1)
             maxTokensSpin.value = Math.max(maxTokensSpin.from, Math.min(maxTokensSpin.to, controller.aiMaxTokens))
+            contextLengthSpin.value = Math.max(contextLengthSpin.from, Math.min(contextLengthSpin.to, controller.aiContextLength))
         }
 
         contentItem: ColumnLayout {
@@ -275,6 +276,20 @@ Rectangle {
                         editable: true
                     }
                 }
+
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 4
+                    Label { text: "Context Length"; color: theme.text }
+                    SpinBox {
+                        id: contextLengthSpin
+                        Layout.fillWidth: true
+                        from: 0
+                        to: 1000000
+                        stepSize: 1024
+                        editable: true
+                    }
+                }
             }
 
             RowLayout {
@@ -298,7 +313,8 @@ Rectangle {
                                                       apiKeyField.text,
                                                       providerField.text,
                                                       temperature,
-                                                      maxTokensSpin.value)) {
+                                                      maxTokensSpin.value,
+                                                      contextLengthSpin.value)) {
                             aiSettingsDialog.close()
                         }
                     }

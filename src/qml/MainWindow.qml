@@ -16,6 +16,7 @@ Item {
     signal fileRequested()
     signal audioCallRequested()
     signal videoCallRequested()
+    signal clearAssistantHistoryRequested()
 
     Rectangle {
         anchors.fill: parent
@@ -63,6 +64,7 @@ Item {
                 onFileRequested: root.fileRequested()
                 onAudioCallRequested: root.audioCallRequested()
                 onVideoCallRequested: root.videoCallRequested()
+                onClearAssistantHistoryRequested: root.clearAssistantHistoryRequested()
             }
         }
     }

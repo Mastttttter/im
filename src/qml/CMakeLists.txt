@@ -16,6 +16,7 @@ qt_add_qml_module(im
         dialogs/AddFriendDialog.qml
         dialogs/IncomingFriendRequestDialog.qml
         dialogs/DeleteFriendDialog.qml
+        dialogs/ClearAssistantHistoryDialog.qml
         dialogs/EditFriendRemarkDialog.qml
         dialogs/ChangePasswordDialog.qml
         dialogs/CallWindow.qml

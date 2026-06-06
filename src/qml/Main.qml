@@ -59,6 +59,7 @@ ApplicationWindow {
         onAudioCallRequested: appController.startAudioCall()
         onVideoCallRequested: appController.startVideoCall()
         onFileRequested: sendFileDialog.open()
+        onClearAssistantHistoryRequested: clearAssistantHistoryDialog.open()
     }
 
     FileDialog {
@@ -93,6 +94,12 @@ ApplicationWindow {
 
     DeleteFriendDialog {
         id: deleteFriendDialog
+        controller: appController
+        theme: theme
+    }
+
+    ClearAssistantHistoryDialog {
+        id: clearAssistantHistoryDialog
         controller: appController
         theme: theme
     }

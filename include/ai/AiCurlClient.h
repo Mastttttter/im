@@ -6,6 +6,7 @@
 #include <QPointer>
 #include <QString>
 #include <QThread>
+#include <QVector>
 
 /**
  * @brief AI 大模型客户端（基于 libcurl，兼容 OpenAI API 格式）
@@ -18,6 +19,11 @@
  *   2. SendAiMessage() 发送用户消息
  *   3. 连接 ReplyReady / ErrorOccurred 信号接收结果
  */
+struct AiChatMessage {
+  QString role;
+  QString content;
+};
+
 class AiCurlClient : public QObject {
   Q_OBJECT
 
@@ -40,14 +46,16 @@ class AiCurlClient : public QObject {
   int MaxTokens() const { return maxTokens_; }
   bool IsBusy() const { return busy_; }
 
-  void SendAiMessage(QString const &userText);
+  void SendAiMessage(QString const &userText,
+                     QVector<AiChatMessage> const &history = {});
 
   signals:
   void ReplyReady(QString const &aiText);
   void ErrorOccurred(QString const &errorMsg);
 
   private:
-  QByteArray BuildRequestJson_(QString const &userText) const;
+  QByteArray BuildRequestJson_(QString const &userText,
+                               QVector<AiChatMessage> const &history) const;
   static QPair<bool, QString> PerformRequest_(QByteArray const &jsonBody,
                                               QString const &apiUrl,
                                               QString const &apiKey);
