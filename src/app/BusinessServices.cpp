@@ -338,6 +338,55 @@ StorageService::loadRecentFriendMessages(QString const &friendPublicKey,
   }
 }
 
+QString StorageService::metaValue(QString const &key,
+                                  QString const &fallback) const {
+  QString const normalizedKey = key.trimmed();
+  if (!store_.IsOpen() || normalizedKey.isEmpty()) {
+    return fallback;
+  }
+  try {
+    auto const value = store_.GetMetaValue(normalizedKey);
+    return value.value_or(fallback);
+  } catch (...) {
+    return fallback;
+  }
+}
+
+void StorageService::setMetaValue(QString const &key,
+                                  QString const &value) const {
+  QString const normalizedKey = key.trimmed();
+  if (!store_.IsOpen() || normalizedKey.isEmpty()) {
+    return;
+  }
+  try {
+    store_.SetMetaValue(normalizedKey, value);
+  } catch (...) {}
+}
+
+void StorageService::saveAiMessage(bool outgoing, QString const &body,
+                                   qint64 createdAtMs) const {
+  if (!store_.IsOpen() || body.isEmpty()) {
+    return;
+  }
+  try {
+    QString const aiKey = QString::fromLatin1(kAiLocalPubKey);
+    store_.EnsureContact(aiKey, createdAtMs);
+    store_.InsertMessage(aiKey, outgoing ? 1 : 0, 0, body, createdAtMs);
+  } catch (...) {}
+}
+
+QList<Persistence::SqliteStorage::MessageRow>
+StorageService::loadRecentAiMessages(int limit) const {
+  if (!store_.IsOpen()) {
+    return {};
+  }
+  try {
+    return store_.LoadRecentMessages(QString::fromLatin1(kAiLocalPubKey), limit);
+  } catch (...) {
+    return {};
+  }
+}
+
 QString StorageService::themePreference() const {
   QSettings settings;
   return settings.value(QStringLiteral("ui/theme"), QStringLiteral("dark"))
@@ -365,13 +414,6 @@ QString CallService::startCall(QString const &conversationTitle,
 
 QString CallService::hangupCall(QString const &conversationTitle) const {
   return QStringLiteral("已结束与 %1 的通话占位流程。").arg(conversationTitle);
-}
-
-QString AiAssistantService::reply(QString const &account,
-                                  QString const &message) const {
-  Q_UNUSED(message)
-  return QStringLiteral("%1，我是 AI 助手占位服务：后续会接入真实智能回复。")
-      .arg(account.isEmpty() ? QStringLiteral("你好") : account);
 }
 
 void GroupPersistenceService::rememberGroup(QString const &identifier,

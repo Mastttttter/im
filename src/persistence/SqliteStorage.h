@@ -50,6 +50,7 @@ class SqliteStorage {
   void OpenFileUnlocked_(QString const &filePath, QString const &password);
   void ChangePassword(QString const &oldPassword, QString const &newPassword);
   std::optional<QString> GetMetaValue(QString const &key) const;
+  void SetMetaValue(QString const &key, QString const &value);
   std::optional<QByteArray> LoadToxSavedata() const;
   void SaveToxSavedata(QByteArray const &blob, qint64 updatedAtMs);
 

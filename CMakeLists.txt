@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTORCC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 QuickDialogs2 Multimedia)
+find_package(CURL REQUIRED)
 qt_standard_project_setup(REQUIRES 6.10)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
@@ -45,6 +46,8 @@ qt_add_executable(im
     ${PROJECT_SOURCE_DIR}/src/audio/AudioManager.cpp
     ${PROJECT_SOURCE_DIR}/src/video/VideoManager.h
     ${PROJECT_SOURCE_DIR}/src/video/VideoManager.cpp
+    ${PROJECT_SOURCE_DIR}/include/ai/AiCurlClient.h
+    ${PROJECT_SOURCE_DIR}/src/ai/AiCurlClient.cpp
     ${PROJECT_SOURCE_DIR}/src/persistence/SqliteStorage.cpp
     ${PROJECT_SOURCE_DIR}/src/app/AppController.h
     ${PROJECT_SOURCE_DIR}/src/app/AppController.cpp
@@ -89,6 +92,7 @@ target_link_libraries(im PRIVATE
     Qt6::QuickControls2
     Qt6::QuickDialogs2
     Qt6::Multimedia
+    CURL::libcurl
     toxcore_shared
     SQLiteCpp
     $<TARGET_NAME_IF_EXISTS:sqlcipher>

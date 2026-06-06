@@ -52,6 +52,10 @@ class StorageService final {
                          qint64 createdAtMs) const;
   QList<Persistence::SqliteStorage::MessageRow> loadRecentFriendMessages(
       QString const &friendPublicKey, int limit) const;
+  QString metaValue(QString const &key, QString const &fallback = QString()) const;
+  void setMetaValue(QString const &key, QString const &value) const;
+  void saveAiMessage(bool outgoing, QString const &body, qint64 createdAtMs) const;
+  QList<Persistence::SqliteStorage::MessageRow> loadRecentAiMessages(int limit) const;
   QString themePreference() const;
   void saveThemePreference(QString const &theme);
 
@@ -70,11 +74,6 @@ class CallService final {
   public:
   QString startCall(QString const &conversationTitle, bool videoEnabled) const;
   QString hangupCall(QString const &conversationTitle) const;
-};
-
-class AiAssistantService final {
-  public:
-  QString reply(QString const &account, QString const &message) const;
 };
 
 class GroupPersistenceService final {

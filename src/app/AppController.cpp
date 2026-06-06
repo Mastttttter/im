@@ -16,6 +16,7 @@
 #include <QStandardPaths>
 #include <QUrl>
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <filesystem>
@@ -27,6 +28,7 @@ namespace {
 constexpr uint32_t kInvalidNumber = std::numeric_limits<uint32_t>::max();
 constexpr int kCallRecordMessageType = 100;
 constexpr int kFileRecordMessageType = 101;
+constexpr int kAiRecentMessageLimit = 200;
 
 struct BootstrapNode {
   QString address;
@@ -328,6 +330,11 @@ std::vector<BootstrapNode> loadBootstrapNodes(QStringList const &paths) {
 
 AppController::AppController(QObject *parent) : QObject(parent) {
   darkTheme_ = storageService_.themePreference() != QStringLiteral("light");
+  aiClient_ = std::make_unique<AiCurlClient>(this);
+  connect(aiClient_.get(), &AiCurlClient::ReplyReady, this,
+          &AppController::onAiReplyReady);
+  connect(aiClient_.get(), &AiCurlClient::ErrorOccurred, this,
+          &AppController::onAiError);
 
   iterateTimer_.setSingleShot(true);
   refreshTimer_.setInterval(1500);
@@ -355,6 +362,30 @@ QString AppController::selectedConversationKind() const {
   return conversationKindText(selectedKind_);
 }
 QString AppController::selectedConversationTitle() const { return selectedTitle_; }
+QString AppController::aiBaseUrl() const {
+  return aiClient_ ? aiClient_->BaseUrl() : QStringLiteral("https://api.tokenpony.cn/v1");
+}
+QString AppController::aiModelName() const {
+  return aiClient_ ? aiClient_->ModelName() : QStringLiteral("qwen3-8b");
+}
+QString AppController::aiApiKey() const {
+  return aiClient_ ? aiClient_->ApiKey() : QString();
+}
+bool AppController::aiApiKeyConfigured() const {
+  return aiClient_ && !aiClient_->ApiKey().isEmpty();
+}
+QString AppController::aiProvider() const {
+  return aiClient_ ? aiClient_->Provider() : QStringLiteral("tokenpony");
+}
+double AppController::aiTemperature() const {
+  return aiClient_ ? aiClient_->Temperature() : 0.0;
+}
+int AppController::aiMaxTokens() const {
+  return aiClient_ ? aiClient_->MaxTokens() : 4096;
+}
+bool AppController::aiBusy() const {
+  return aiClient_ && aiClient_->IsBusy();
+}
 
 bool AppController::hasPendingFriendRequest() const {
   return !pendingFriendRequests_.isEmpty();
@@ -431,6 +462,7 @@ void AppController::loginOrRegister(QString const &account,
   if (!startTox()) {
     return;
   }
+  loadAiSettings();
 
   if (!loggedIn_) {
     loggedIn_ = true;
@@ -551,11 +583,59 @@ void AppController::selectGroup(QString const &identifier) {
 void AppController::selectAssistant() {
   selectConversation(ConversationKind::Assistant, QStringLiteral("assistant"),
                      QStringLiteral("AI 助手"));
-  QString const key = conversationKey(selectedKind_, selectedIdentifier_);
-  if (chatHistory_.value(key).isEmpty()) {
-    appendCurrentSystemMessage(
-        QStringLiteral("AI 助手是占位服务，真实模型后续接入。"));
+}
+
+bool AppController::saveAiSettings(QString const &baseUrl,
+                                   QString const &modelName,
+                                   QString const &apiKey,
+                                   QString const &provider,
+                                   double temperature, int maxTokens) {
+  QString const normalizedBaseUrl = baseUrl.trimmed();
+  QString const normalizedModel = modelName.trimmed();
+  QString const normalizedApiKey = apiKey.trimmed();
+  QString const normalizedProvider = provider.trimmed();
+  if (normalizedBaseUrl.isEmpty()) {
+    addNotice(QStringLiteral("ai"), QStringLiteral("请输入 AI Base URL。"),
+              QStringLiteral("warning"));
+    return false;
   }
+  if (normalizedModel.isEmpty()) {
+    addNotice(QStringLiteral("ai"), QStringLiteral("请输入 AI 模型名称。"),
+              QStringLiteral("warning"));
+    return false;
+  }
+  if (!aiClient_) {
+    return false;
+  }
+
+  double const normalizedTemperature =
+      std::isfinite(temperature) ? std::clamp(temperature, 0.0, 2.0) : 0.0;
+  int const normalizedMaxTokens = std::clamp(maxTokens, 64, 65536);
+
+  aiClient_->SetBaseUrl(normalizedBaseUrl);
+  aiClient_->SetModelName(normalizedModel);
+  aiClient_->SetApiKey(normalizedApiKey);
+  aiClient_->SetProvider(normalizedProvider);
+  aiClient_->SetTemperature(normalizedTemperature);
+  aiClient_->SetMaxTokens(normalizedMaxTokens);
+
+  storageService_.setMetaValue(QStringLiteral("ai.base_url"), aiClient_->BaseUrl());
+  storageService_.setMetaValue(QStringLiteral("ai.model_name"), aiClient_->ModelName());
+  storageService_.setMetaValue(QStringLiteral("ai.api_key"), aiClient_->ApiKey());
+  storageService_.setMetaValue(QStringLiteral("ai.provider"), aiClient_->Provider());
+  storageService_.setMetaValue(QStringLiteral("ai.temperature"),
+                               QString::number(aiClient_->Temperature(), 'f', 1));
+  storageService_.setMetaValue(QStringLiteral("ai.max_tokens"),
+                               QString::number(aiClient_->MaxTokens()));
+
+  emit aiSettingsChanged();
+  addNotice(QStringLiteral("ai"),
+            normalizedApiKey.isEmpty()
+                ? QStringLiteral("AI 设置已保存；未设置 API Key，暂不能请求。")
+                : QStringLiteral("AI 设置已保存。"),
+            normalizedApiKey.isEmpty() ? QStringLiteral("warning")
+                                       : QStringLiteral("info"));
+  return true;
 }
 
 void AppController::addFriend(QString const &toxId, QString const &message) {
@@ -862,21 +942,7 @@ void AppController::sendMessage(QString const &text) {
     return;
   }
 
-  appendMessageToConversation(ConversationKind::Assistant, QStringLiteral("assistant"),
-                              outgoing);
-  QTimer::singleShot(250, this, [this, body]() {
-    appendMessageToConversation(
-        ConversationKind::Assistant, QStringLiteral("assistant"),
-        {makeMessageIdentifier(),
-         QStringLiteral("AI 助手"),
-         aiAssistantService_.reply(accountName_, body),
-         timestampText(),
-         false,
-         false,
-         QStringLiteral("assistant"),
-         -1,
-         QStringLiteral("received")});
-  });
+  sendAssistantMessage(body);
 }
 
 void AppController::sendFile(QString const &localFileUrlOrPath) {
@@ -1514,6 +1580,13 @@ void AppController::loadSelectedConversation() {
       }
     }
   }
+  if (messages.isEmpty() && selectedKind_ == ConversationKind::Assistant &&
+      selectedIdentifier_ == QStringLiteral("assistant")) {
+    loadPersistedAiMessages(messages);
+    if (!messages.isEmpty()) {
+      chatHistory_.insert(key, messages);
+    }
+  }
   chatModel_.setMessages(messages);
 }
 
@@ -1525,6 +1598,121 @@ void AppController::appendMessageToConversation(ConversationKind kind,
   if (selectedKind_ == kind && selectedIdentifier_ == identifier) {
     chatModel_.appendMessage(std::move(message));
   }
+}
+
+void AppController::sendAssistantMessage(QString const &body) {
+  if (!aiClient_) {
+    return;
+  }
+  if (aiClient_->IsBusy()) {
+    addNotice(QStringLiteral("ai"), QStringLiteral("AI 正在生成回复，请稍候。"),
+              QStringLiteral("warning"));
+    return;
+  }
+  if (aiClient_->ApiKey().isEmpty()) {
+    addNotice(QStringLiteral("ai"), QStringLiteral("请先在 AI 助手设置中填写 API Key。"),
+              QStringLiteral("warning"));
+    if (selectedKind_ == ConversationKind::Assistant) {
+      appendCurrentSystemMessage(QStringLiteral("请先打开 AI 助手设置并填写 API Key。"),
+                                 QStringLiteral("warning"));
+    }
+    return;
+  }
+
+  qint64 const now = QDateTime::currentMSecsSinceEpoch();
+  appendAssistantMessage(true, body, now, true);
+  aiClient_->SendAiMessage(body);
+  emit aiBusyChanged();
+}
+
+void AppController::appendAssistantMessage(bool outgoing, QString const &text,
+                                           qint64 createdAtMs, bool saveToDb) {
+  appendMessageToConversation(
+      ConversationKind::Assistant, QStringLiteral("assistant"),
+      {makeMessageIdentifier(),
+       outgoing ? QStringLiteral("我") : QStringLiteral("AI 助手"),
+       text,
+       timestampText(createdAtMs),
+       outgoing,
+       false,
+       outgoing ? QStringLiteral("text") : QStringLiteral("assistant"),
+       -1,
+       outgoing ? QStringLiteral("sent") : QStringLiteral("received")});
+  if (saveToDb) {
+    storageService_.saveAiMessage(outgoing, text, createdAtMs);
+  }
+}
+
+void AppController::loadPersistedAiMessages(QVector<ChatMessageItem> &messages) {
+  for (Persistence::SqliteStorage::MessageRow const &row:
+       storageService_.loadRecentAiMessages(kAiRecentMessageLimit)) {
+    bool const outgoing = row.direction == 1;
+    messages.push_back({makeMessageIdentifier(),
+                        outgoing ? QStringLiteral("我")
+                                 : QStringLiteral("AI 助手"),
+                        row.body,
+                        timestampText(row.createdAtMs),
+                        outgoing,
+                        false,
+                        outgoing ? QStringLiteral("text")
+                                 : QStringLiteral("assistant"),
+                        -1,
+                        outgoing ? QStringLiteral("sent")
+                                 : QStringLiteral("received")});
+  }
+}
+
+void AppController::loadAiSettings() {
+  if (!aiClient_) {
+    return;
+  }
+
+  aiClient_->SetBaseUrl(QStringLiteral("https://api.tokenpony.cn/v1"));
+  aiClient_->SetModelName(QStringLiteral("qwen3-8b"));
+  aiClient_->SetApiKey({});
+  aiClient_->SetProvider(QStringLiteral("tokenpony"));
+  aiClient_->SetTemperature(0.0);
+  aiClient_->SetMaxTokens(4096);
+
+  QString const baseUrl = storageService_.metaValue(QStringLiteral("ai.base_url"),
+                                                    aiClient_->BaseUrl());
+  if (!baseUrl.trimmed().isEmpty()) {
+    aiClient_->SetBaseUrl(baseUrl);
+  }
+  QString const modelName = storageService_.metaValue(QStringLiteral("ai.model_name"),
+                                                      aiClient_->ModelName());
+  if (!modelName.trimmed().isEmpty()) {
+    aiClient_->SetModelName(modelName);
+  }
+  aiClient_->SetApiKey(storageService_.metaValue(QStringLiteral("ai.api_key")));
+  aiClient_->SetProvider(storageService_.metaValue(QStringLiteral("ai.provider"),
+                                                   aiClient_->Provider()));
+  QString const temperature = storageService_.metaValue(QStringLiteral("ai.temperature"));
+  bool temperatureOk = false;
+  double const parsedTemperature = temperature.toDouble(&temperatureOk);
+  if (temperatureOk && std::isfinite(parsedTemperature)) {
+    aiClient_->SetTemperature(std::clamp(parsedTemperature, 0.0, 2.0));
+  }
+  QString const maxTokens = storageService_.metaValue(QStringLiteral("ai.max_tokens"));
+  bool maxTokensOk = false;
+  int const parsedMaxTokens = maxTokens.toInt(&maxTokensOk);
+  if (maxTokensOk) {
+    aiClient_->SetMaxTokens(std::clamp(parsedMaxTokens, 64, 65536));
+  }
+
+  emit aiSettingsChanged();
+  emit aiBusyChanged();
+}
+
+void AppController::onAiReplyReady(QString const &aiText) {
+  emit aiBusyChanged();
+  appendAssistantMessage(false, aiText, QDateTime::currentMSecsSinceEpoch(), true);
+}
+
+void AppController::onAiError(QString const &errorMsg) {
+  emit aiBusyChanged();
+  appendAssistantMessage(false, errorMsg, QDateTime::currentMSecsSinceEpoch(), false);
+  addNotice(QStringLiteral("ai"), errorMsg, QStringLiteral("warning"));
 }
 
 void AppController::updateMessageInConversation(

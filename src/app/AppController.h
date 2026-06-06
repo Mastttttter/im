@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ai/AiCurlClient.h"
 #include "app/BusinessServices.h"
 #include "app/ChatMessageModel.h"
 #include "app/ContactListModel.h"
@@ -36,6 +37,14 @@ class AppController final : public QObject {
   Q_PROPERTY(QString selectedConversationIdentifier READ selectedConversationIdentifier NOTIFY selectedConversationChanged)
   Q_PROPERTY(QString selectedConversationKind READ selectedConversationKind NOTIFY selectedConversationChanged)
   Q_PROPERTY(QString selectedConversationTitle READ selectedConversationTitle NOTIFY selectedConversationChanged)
+  Q_PROPERTY(QString aiBaseUrl READ aiBaseUrl NOTIFY aiSettingsChanged)
+  Q_PROPERTY(QString aiModelName READ aiModelName NOTIFY aiSettingsChanged)
+  Q_PROPERTY(QString aiApiKey READ aiApiKey NOTIFY aiSettingsChanged)
+  Q_PROPERTY(bool aiApiKeyConfigured READ aiApiKeyConfigured NOTIFY aiSettingsChanged)
+  Q_PROPERTY(QString aiProvider READ aiProvider NOTIFY aiSettingsChanged)
+  Q_PROPERTY(double aiTemperature READ aiTemperature NOTIFY aiSettingsChanged)
+  Q_PROPERTY(int aiMaxTokens READ aiMaxTokens NOTIFY aiSettingsChanged)
+  Q_PROPERTY(bool aiBusy READ aiBusy NOTIFY aiBusyChanged)
   Q_PROPERTY(bool hasPendingFriendRequest READ hasPendingFriendRequest NOTIFY pendingFriendRequestChanged)
   Q_PROPERTY(QString pendingFriendRequestPublicKey READ pendingFriendRequestPublicKey NOTIFY pendingFriendRequestChanged)
   Q_PROPERTY(QString pendingFriendRequestMessage READ pendingFriendRequestMessage NOTIFY pendingFriendRequestChanged)
@@ -65,6 +74,14 @@ class AppController final : public QObject {
   QString selectedConversationIdentifier() const;
   QString selectedConversationKind() const;
   QString selectedConversationTitle() const;
+  QString aiBaseUrl() const;
+  QString aiModelName() const;
+  QString aiApiKey() const;
+  bool aiApiKeyConfigured() const;
+  QString aiProvider() const;
+  double aiTemperature() const;
+  int aiMaxTokens() const;
+  bool aiBusy() const;
   bool hasPendingFriendRequest() const;
   QString pendingFriendRequestPublicKey() const;
   QString pendingFriendRequestMessage() const;
@@ -99,6 +116,11 @@ class AppController final : public QObject {
   Q_INVOKABLE void selectFriend(QString const &identifier);
   Q_INVOKABLE void selectGroup(QString const &identifier);
   Q_INVOKABLE void selectAssistant();
+  Q_INVOKABLE bool saveAiSettings(QString const &baseUrl,
+                                  QString const &modelName,
+                                  QString const &apiKey,
+                                  QString const &provider,
+                                  double temperature, int maxTokens);
   Q_INVOKABLE void addFriend(QString const &toxId, QString const &message);
   Q_INVOKABLE bool acceptPendingFriendRequest();
   Q_INVOKABLE bool rejectPendingFriendRequest();
@@ -130,6 +152,8 @@ class AppController final : public QObject {
   void knownAccountsChanged();
   void profileMessageChanged();
   void selectedConversationChanged();
+  void aiSettingsChanged();
+  void aiBusyChanged();
   void pendingFriendRequestChanged();
   void friendRequestPromptRequested();
   void incomingFileSaveRequested(QString senderName, QString fileName,
@@ -182,6 +206,13 @@ class AppController final : public QObject {
   void loadSelectedConversation();
   void appendMessageToConversation(ConversationKind kind, QString const &identifier,
                                    ChatMessageItem message);
+  void sendAssistantMessage(QString const &body);
+  void appendAssistantMessage(bool outgoing, QString const &text,
+                              qint64 createdAtMs, bool saveToDb);
+  void loadPersistedAiMessages(QVector<ChatMessageItem> &messages);
+  void loadAiSettings();
+  void onAiReplyReady(QString const &aiText);
+  void onAiError(QString const &errorMsg);
   void updateMessageInConversation(ConversationKind kind,
                                    QString const &identifier,
                                    QString const &messageIdentifier,
@@ -249,7 +280,6 @@ class AppController final : public QObject {
   StorageService storageService_;
   FileTransferService fileTransferService_;
   CallService callService_;
-  AiAssistantService aiAssistantService_;
   GroupPersistenceService groupPersistenceService_;
 
   ContactListModel friendModel_;
@@ -258,6 +288,7 @@ class AppController final : public QObject {
   NoticeModel noticeModel_;
 
   std::unique_ptr<ToxCore::ToxCoreWrapper> tox_;
+  std::unique_ptr<AiCurlClient> aiClient_;
   QTimer iterateTimer_;
   QTimer refreshTimer_;
 

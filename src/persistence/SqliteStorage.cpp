@@ -324,6 +324,17 @@ std::optional<QString> SqliteStorage::GetMetaValue(QString const &key) const {
   return QString::fromUtf8(stmt.getColumn(0).getText());
 }
 
+void SqliteStorage::SetMetaValue(QString const &key, QString const &value) {
+  if (!db_) {
+    throw std::logic_error("database is not open");
+  }
+  SQLite::Statement stmt(*db_,
+                         "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?);");
+  stmt.bind(1, ToUtf8String_(key));
+  stmt.bind(2, ToUtf8String_(value));
+  stmt.exec();
+}
+
 // 从数据库加载 Tox savedata（如果不存在则返回 nullopt）
 std::optional<QByteArray> SqliteStorage::LoadToxSavedata() const {
   if (!db_) {
