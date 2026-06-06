@@ -61,7 +61,7 @@ class AppController final : public QObject {
 
   public:
   explicit AppController(QObject *parent = nullptr);
-  ~AppController() override = default;
+  ~AppController() override;
 
   bool loggedIn() const;
   QString accountName() const;

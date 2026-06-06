@@ -353,6 +353,19 @@ AppController::AppController(QObject *parent) : QObject(parent) {
   addNotice(QStringLiteral("status"), QStringLiteral("QML shell ready"));
 }
 
+AppController::~AppController() {
+  iterateTimer_.stop();
+  refreshTimer_.stop();
+  cleanupCallMedia();
+  try {
+    persistSavedata();
+  } catch (...) {
+  }
+  aiClient_.reset();
+  tox_.reset();
+  Persistence::SqliteStorage::GetDb().Close();
+}
+
 bool AppController::loggedIn() const { return loggedIn_; }
 QString AppController::accountName() const { return accountName_; }
 QString AppController::selfToxId() const { return selfToxId_; }

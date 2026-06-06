@@ -58,6 +58,10 @@ QString SqliteStorage::DbFilePath() const {
   return dbPath_;
 }
 
+void SqliteStorage::Close() {
+  Close_();
+}
+
 void SqliteStorage::OpenForProfile(QString const &profileName,
                                    QString const &password) {
   QString const baseDir =

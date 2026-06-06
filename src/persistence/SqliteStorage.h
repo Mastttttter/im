@@ -45,6 +45,7 @@ class SqliteStorage {
 
   bool IsOpen() const;
   QString DbFilePath() const;
+  void Close();
   void OpenForProfile(QString const &profileName, QString const &password);
   void OpenFile(QString const &filePath, QString const &password);
   void OpenFileUnlocked_(QString const &filePath, QString const &password);
